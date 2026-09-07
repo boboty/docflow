@@ -1,0 +1,35 @@
+# Mapping for the real "送货单" xlsx template.
+# Coordinates derived from manual inspection of a real template instance
+# (item table at rows 7-24, total formula at row 25). The template file
+# itself is never committed.
+id: delivery.note.v1
+format: xlsx
+sheet: 送货单
+
+header:
+  A3: "收货单位：{ship_to_company}"
+  D3: "联系人：{ship_to_contact}"
+  F3: "NO：{delivery_no}"
+  A4: "收货地址：{ship_to_address}"
+  A5: "联系电话：{ship_to_phone}"
+  E5: "日期：{delivery_date}"
+  A28: "送货单位：{seller}"
+  A29: "地址：{seller_address}"
+  A30: "联系电话：{seller_contact}{seller_phone}"
+  A33: "送货单位：{seller}"
+  E33: "收货单位：{ship_to_company}"
+
+items:
+  start_row: 7
+  end_row: 24
+  columns:
+    index: A
+    product_name: B
+    specification: C
+    quantity: D
+    unit: E
+    gross_unit_price: F
+    remarks: H
+  # Column G (金额/元 = Dn*Fn) is a native Excel formula left intact by the
+  # renderer; it recalculates automatically once Excel opens the generated
+  # file (fullCalcOnLoad), as does the D25 = SUM(G7:G24) total.

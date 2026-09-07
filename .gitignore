@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Real templates and real business data must never be committed.
+/templates/real/
+/output/
+*.local.xlsx
+*.local.json

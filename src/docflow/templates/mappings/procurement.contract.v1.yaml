@@ -1,0 +1,38 @@
+# Mapping for the real "采购合同" xlsx template.
+# Coordinates derived from manual inspection of a real template instance
+# (merged cells, item table at rows 9-26, subtotal formulas at row 27,
+# RMB-capital line at row 28). The template file itself is never committed.
+#
+# Clause paragraphs (质量要求 / 交货地点 / 运输方式 / 违约责任 / 结算方式 /
+# 争议解决, rows 30-46) are static template boilerplate for phase 1 and are
+# intentionally NOT overwritten by the engine.
+id: procurement.contract.v1
+format: xlsx
+sheet: 采购合同
+
+header:
+  A3: "购方：{buyer}"
+  F3: "合同编号：{contract_no}"
+  A4: "销方：{seller}"
+  A28: "合并（RMB大写）：{amount_in_words}"
+  A48: "购方：{buyer}"
+  F48: "销方：{seller}"
+  A49: "时间：{contract_date}"
+  F49: "时间：{contract_date}"
+
+items:
+  start_row: 9
+  end_row: 26
+  columns:
+    sku: A
+    product_name: B
+    specification: C
+    quantity: D
+    unit: E
+    net_unit_price: F
+    net_amount: G
+    tax_amount: H
+    gross_amount: I
+  # Row 27 (小计 = SUM(G9:G26), SUM(H9:H26), SUM(I9:I26)) and I28 (=I27) are
+  # native Excel formulas left intact by the renderer; they recalculate
+  # automatically once Excel opens the generated file (fullCalcOnLoad).
