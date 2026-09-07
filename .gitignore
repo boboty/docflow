@@ -11,5 +11,6 @@ dist/
 # Real templates and real business data must never be committed.
 /templates/real/
 /output/
+/local/
 *.local.xlsx
 *.local.json

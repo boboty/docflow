@@ -3,7 +3,6 @@ import json
 from pathlib import Path
 
 import openpyxl
-import pytest
 
 from docflow.application.generation import FAILED, PASS, generate_batch
 
@@ -100,3 +99,104 @@ def test_same_input_produces_stable_business_content(
     ws_b = wb_b[wb_b.sheetnames[0]]
     assert ws_a["A3"].value == ws_b["A3"].value
     assert ws_a["I9"].value == ws_b["I9"].value
+
+
+def test_contract_and_delivery_files_agree_on_amount_within_source_tolerance(
+    sample_batch_dict, contract_template_path, delivery_template_path, tmp_path
+):
+    """P0 regression: gross_unit_price*quantity is allowed to diverge from
+    gross_amount within the documented tolerance. Both generated FILES
+    (not just the in-memory projections) must still show the same,
+    authoritative amount for that line - not one computed by multiplying
+    D*F in the delivery note.
+    """
+    record = copy.deepcopy(sample_batch_dict)
+    record["business_reference"] = "BR-TOLERANCE"
+    record["items"] = [{
+        "sku": "SKU-042", "product_name": "测试产品", "specification": "型号SKU-042",
+        "quantity": 42, "unit": "件", "gross_unit_price": "49", "gross_amount": "2058.10",
+        "tax_rate": "0.13",
+    }]
+
+    batch_path = _write_batch(tmp_path, [record])
+    output_dir = tmp_path / "output"
+
+    summary = generate_batch(batch_path, contract_template_path, delivery_template_path, output_dir)
+    assert summary.failed_documents == 0, [(e.document_type, e.issues) for e in summary.entries]
+
+    contract_wb = openpyxl.load_workbook(output_dir / "BR-TOLERANCE" / "procurement-contract.xlsx")
+    delivery_wb = openpyxl.load_workbook(output_dir / "BR-TOLERANCE" / "delivery-note.xlsx")
+    contract_gross = contract_wb["采购合同"]["I9"].value
+    delivery_gross = delivery_wb["送货单"]["G7"].value
+
+    assert contract_gross == 2058.10
+    assert delivery_gross == 2058.10
+    assert contract_gross == delivery_gross
+    assert delivery_gross != 42 * 49  # the recomputed-formula value this bug used to show
+
+
+def test_non_finite_decimal_fails_cleanly_without_crashing_batch(
+    sample_batch_dict, contract_template_path, delivery_template_path, tmp_path
+):
+    good_1 = copy.deepcopy(sample_batch_dict)
+    good_1["business_reference"] = "BR-GOOD-1"
+
+    for bad_value in ("NaN", "Infinity", "-Infinity"):
+        bad = copy.deepcopy(sample_batch_dict)
+        bad["business_reference"] = f"BR-BAD-{bad_value}"
+        bad["items"][0]["gross_amount"] = bad_value
+
+        good_2 = copy.deepcopy(sample_batch_dict)
+        good_2["business_reference"] = "BR-GOOD-2"
+
+        batch_path = _write_batch(tmp_path, [good_1, bad, good_2], name=f"batch-{bad_value}.json")
+        output_dir = tmp_path / f"output-{bad_value}"
+
+        summary = generate_batch(batch_path, contract_template_path, delivery_template_path, output_dir)
+
+        assert summary.total_records == 3
+        assert summary.passed_documents == 4  # good_1 + good_2, 2 documents each
+        assert summary.failed_documents == 2  # bad record only
+        bad_entries = [e for e in summary.entries if e.business_reference == bad["business_reference"]]
+        assert all(e.validation_status == FAILED for e in bad_entries)
+        assert all(
+            "NON_FINITE_DECIMAL" in issue or "NON_FINITE_VALUE" in issue
+            for e in bad_entries for issue in e.issues
+        )
+        assert (output_dir / "BR-GOOD-1" / "procurement-contract.xlsx").exists()
+        assert (output_dir / "BR-GOOD-2" / "procurement-contract.xlsx").exists()
+
+
+def test_non_dict_record_fails_cleanly_without_crashing_batch(
+    sample_batch_dict, contract_template_path, delivery_template_path, tmp_path
+):
+    # A batch element that isn't even a JSON object (e.g. a stray string)
+    # must not raise an unhandled exception out of generate_batch.
+    batch_path = _write_batch(tmp_path, ["not-a-record", sample_batch_dict])
+    output_dir = tmp_path / "output"
+
+    summary = generate_batch(batch_path, contract_template_path, delivery_template_path, output_dir)
+
+    assert summary.total_records == 2
+    assert summary.passed_documents == 2
+    assert summary.failed_documents == 2
+    failed = [e for e in summary.entries if e.validation_status == FAILED]
+    assert all("INVALID_RECORD_SHAPE" in issue for e in failed for issue in e.issues)
+
+
+def test_malformed_extra_field_fails_cleanly_without_crashing_batch(
+    sample_batch_dict, contract_template_path, delivery_template_path, tmp_path
+):
+    broken = copy.deepcopy(sample_batch_dict)
+    broken["business_reference"] = "BR-BAD-EXTRA"
+    broken["extra"] = ["not", "an", "object"]  # must not raise dict()/TypeError
+
+    batch_path = _write_batch(tmp_path, [broken])
+    output_dir = tmp_path / "output"
+
+    summary = generate_batch(batch_path, contract_template_path, delivery_template_path, output_dir)
+
+    assert summary.total_records == 1
+    assert summary.failed_documents == 2
+    assert all(e.validation_status == FAILED for e in summary.entries)
+    assert all("INVALID_RECORD_SHAPE" in issue for e in summary.entries for issue in e.issues)

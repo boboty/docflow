@@ -29,7 +29,17 @@ items:
     quantity: D
     unit: E
     gross_unit_price: F
+    gross_amount: G
     remarks: H
-  # Column G (金额/元 = Dn*Fn) is a native Excel formula left intact by the
-  # renderer; it recalculates automatically once Excel opens the generated
-  # file (fullCalcOnLoad), as does the D25 = SUM(G7:G24) total.
+  # Column G (金额/元) is written as the LITERAL authoritative gross_amount
+  # source fact, not a recomputed =Dn*Fn formula (Phase 0 Repair-2 P0
+  # blocker: gross_unit_price*quantity is only guaranteed to match
+  # gross_amount within a documented rounding tolerance - a per-row
+  # formula would silently show a different number than the contract's I
+  # column whenever that tolerance is used, so the two real files could
+  # disagree on business content despite both passing validation). Unused
+  # rows are cleared like every other mapped column. The template's own
+  # D25 = SUM(G7:G24) total is a fixed-range aggregate formula left
+  # untouched - since G always holds the true gross_amount, its sum is
+  # correct; it recalculates automatically once Excel opens the file
+  # (fullCalcOnLoad).

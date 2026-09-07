@@ -23,19 +23,34 @@ def delivery_template_path(tmp_path: Path) -> Path:
     return build_delivery_template(tmp_path / "delivery-template.xlsx")
 
 
-def make_line_item(index: int, quantity: int = 2, net_unit_price: str = "100.00") -> LineItemFacts:
+def make_line_item(
+    index: int,
+    quantity: int = 2,
+    gross_unit_price: str = "113.00",
+    gross_amount: str | None = None,
+    tax_rate: str = "0.13",
+) -> LineItemFacts:
+    """gross_unit_price=113.00 with tax_rate=0.13 gives a clean
+    net_unit_price of 100.00 (113 / 1.13 == 100 exactly), which keeps
+    default test data easy to eyeball. gross_amount defaults to
+    gross_unit_price * quantity (source-consistent); pass it explicitly to
+    build an inconsistent-on-purpose fixture.
+    """
+    if gross_amount is None:
+        gross_amount = str(Decimal(quantity) * Decimal(gross_unit_price))
     return LineItemFacts(
         sku=f"SKU-{index:03d}",
         product_name=f"测试产品{index}",
         specification=f"型号SKU-{index:03d}",
         quantity=Decimal(quantity),
         unit="件",
-        net_unit_price=Decimal(net_unit_price),
-        tax_rate=Decimal("0.13"),
+        gross_unit_price=Decimal(gross_unit_price),
+        gross_amount=Decimal(gross_amount),
+        tax_rate=Decimal(tax_rate),
     )
 
 
-def make_fact_pack(business_reference: str = "BR-0001", item_count: int = 2) -> DocumentFactPack:
+def make_fact_pack(business_reference: str = "BR-0001", item_count: int = 2, **kwargs) -> DocumentFactPack:
     return DocumentFactPack(
         business_reference=business_reference,
         contract_no=f"CT-{business_reference}",
@@ -54,6 +69,7 @@ def make_fact_pack(business_reference: str = "BR-0001", item_count: int = 2) -> 
             address="测试收货地址",
         ),
         items=tuple(make_line_item(i) for i in range(1, item_count + 1)),
+        **kwargs,
     )
 
 
@@ -88,7 +104,8 @@ def sample_batch_dict() -> dict:
                 "specification": "型号SKU-001",
                 "quantity": 2,
                 "unit": "件",
-                "net_unit_price": "100.00",
+                "gross_unit_price": "113.00",
+                "gross_amount": "226.00",
                 "tax_rate": "0.13",
             }
         ],

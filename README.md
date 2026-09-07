@@ -25,9 +25,38 @@ business data
   validation) are plain deterministic code. LLM/Agent layers may call this
   engine in the future; the engine never calls them.
 
-See `docs/` (task brief) for the full phase-1 mandate and the explicit
+See `docs/` (task briefs) for the full phase-0 mandate and the explicit
 YAGNI list (no web UI, no DB, no visual template designer, no approval
 flow, no BEL adapter, etc.) — these are intentionally out of scope.
+
+## Pricing model: gross pricing
+
+Line-item facts are **gross pricing**: `gross_amount` (含税金额, what the
+real contract/delivery-note pair actually settle on) is the authoritative
+source fact per line, supplied by the caller - never recomputed as
+`gross_unit_price * quantity`. Tax-exclusive figures are derived FROM it:
+
+```text
+net_amount     = round(gross_amount / (1 + tax_rate), 2)
+tax_amount     = gross_amount - net_amount
+net_unit_price = round(gross_unit_price / (1 + tax_rate), 2)
+```
+
+`gross_unit_price` is a second, independently supplied source fact (the
+per-unit price printed on the real delivery note); it is expected to
+roughly agree with `gross_amount / quantity`, but that agreement is a
+*validation* concern (`domain.validation.validate_source_consistency`),
+not a derivation shortcut. See `docs/phase-0-repair-task-brief.md` for why
+(an earlier revision derived amounts forward from a tax-exclusive unit
+price and did not match real business documents).
+
+This principle also applies to **rendering**: the delivery note's amount
+column is written as the literal `gross_amount` value, never a per-row
+`=quantity*unit_price` formula. If a formula were used there, the
+documented rounding tolerance in `validate_source_consistency` would let a
+fact pack pass validation while the two generated *files* silently showed
+different amounts for the same line - which happened in an earlier
+revision (see `docs/phase-0-repair-2-acceptance-findings.md`).
 
 ## Real templates and real data
 
@@ -38,6 +67,12 @@ pass their paths to the CLI at runtime. Tests use synthetic fixtures
 (`tests/fixtures/synthetic_templates.py`) that mirror the real templates'
 structure (merged cells, item table position, subtotal formulas, 18-row
 capacity) with fabricated sample data only.
+
+A local, git-ignored golden acceptance test
+(`tests/test_golden_acceptance.py`) checks a real 18-line sample against
+locked totals. It is skipped by default; see that file's docstring to run
+it against your own real templates and `local/golden_batch.local.json`
+(also git-ignored - `/local/` is in `.gitignore`).
 
 ## Project layout
 
@@ -92,6 +127,27 @@ A record fails independently of the rest of the batch; `manifest.json`
 records `PASS`/`FAILED` with structured issue codes per document
 (`business_reference`, `document_type`, `template_id`, `template_version`,
 `output_file`, `validation_status`, `issues`, `source_snapshot_hash`).
+
+Before the record loop runs, a **template preflight** checks the template
+files and mapping are actually usable: file exists, is a valid xlsx, has
+the mapped sheet, the mapping YAML itself is well-formed (row range and
+cell addresses within Excel's actual grid limits, valid column letters),
+every header placeholder and item column field name is one the renderer
+actually understands, every format string is syntactically valid, and no
+mapped cell falls inside a merged range without being that range's
+writable top-left anchor - so a typo'd or structurally-wrong mapping fails
+before the first record, not mid-batch after some records already
+produced output. A preflight failure aborts the *whole* batch
+immediately (exit code 2, nothing written) - it is never disguised as a
+per-record FAILED entry, since no record could possibly succeed.
+
+All numeric fields (amounts, quantities, tax rate, the optional
+`gross_total`) are validated to be finite as soon as they're parsed from
+JSON - `"NaN"`/`"Infinity"` parse as valid `Decimal` values but are
+rejected as `NON_FINITE_DECIMAL` at the batch-input boundary, and
+`domain.validation` independently guards against them too, so a bad value
+can never propagate into a `decimal.InvalidOperation` crash that would
+abort the rest of the batch.
 
 ## Testing
 

@@ -6,15 +6,20 @@ The renderer performs no business calculation. It only:
   - clears leftover sample rows when fewer items than template capacity,
   - fails explicitly when items exceed template capacity.
 
-Native Excel subtotal formulas already present in the template (row sums,
-`=Dn*Fn` per-row amounts) are left untouched; `fullCalcOnLoad` is set so
-Excel recalculates them the moment the generated file is opened.
+Every written amount is a value already decided upstream (rules.money) -
+this renderer never writes a per-row formula that could recompute a
+*different* number than the source fact. A real template's own native,
+fixed-range aggregate formulas (e.g. contract row 27's
+``=SUM(G9:G26)``, delivery's ``D25 = SUM(G7:G24)``) are left untouched;
+`fullCalcOnLoad` is set so Excel recalculates them the moment the
+generated file is opened.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 import openpyxl
+from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.workbook.properties import CalcProperties
 
 from docflow.domain.document import DocumentProjection, chinese_date
@@ -23,11 +28,120 @@ from docflow.templates.definition import TemplateDefinition
 
 TEMPLATE_ITEM_CAPACITY_EXCEEDED = "TEMPLATE_ITEM_CAPACITY_EXCEEDED"
 
+# Single source of truth for header placeholder names, shared between the
+# actual renderer (_header_context) and preflight (which must reject a
+# mapping referencing an unknown placeholder *before* any record is
+# processed, rather than let it surface as a KeyError mid-batch).
+_HEADER_CONTEXT_KEYS = (
+    "buyer", "seller", "contract_no", "delivery_no", "contract_date", "delivery_date",
+    "amount_in_words", "ship_to_company", "ship_to_contact", "ship_to_phone", "ship_to_address",
+    "seller_contact", "seller_phone", "seller_address",
+)
+
+# Field names a mapping's items.columns may legally reference: every
+# LineItemAmounts attribute, plus the two renderer-synthesized ones.
+_VALID_ITEM_FIELDS = frozenset(
+    {"index", "remarks", "sku", "product_name", "specification", "quantity",
+     "unit", "gross_unit_price", "net_unit_price", "net_amount", "tax_amount", "gross_amount"}
+)
+
 
 class TemplateRenderError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)
         self.code = code
+
+
+class TemplatePreflightError(Exception):
+    """A whole-batch-blocking error: the template file or mapping itself is
+    unusable. This is distinct from a per-record TemplateRenderError - it
+    means no record in the batch could possibly succeed, so batch
+    processing must not even start the record loop.
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _is_non_writable_merged_cell(ws, cell_address: str) -> bool:
+    """True if writing to this address would hit an openpyxl MergedCell -
+    i.e. the address falls inside a merged range but is not that range's
+    top-left anchor cell (the only cell in a merge that's actually
+    writable).
+    """
+    row, col = coordinate_to_tuple(cell_address)
+    for merged_range in ws.merged_cells.ranges:
+        if merged_range.min_row <= row <= merged_range.max_row and merged_range.min_col <= col <= merged_range.max_col:
+            if (row, col) != (merged_range.min_row, merged_range.min_col):
+                return True
+    return False
+
+
+def preflight(definition: TemplateDefinition, template_path: Path) -> None:
+    """Verify a template file AND mapping are usable before any record is
+    processed. This must catch everything render() could later choke on
+    for reasons independent of any specific record's data - an unusable
+    template must fail the whole batch up front, not surface mid-loop
+    after some records already produced output.
+
+    Deliberately catches broad exceptions from openpyxl when opening the
+    file: a corrupt/invalid xlsx can surface as any of several unrelated
+    exception types (bad zip, bad XML, missing parts). This is a
+    file-usability gate, not a place where hiding a docflow programmer
+    error would be a concern.
+    """
+    if not template_path.exists():
+        raise TemplatePreflightError("TEMPLATE_FILE_MISSING", f"template file not found: {template_path}")
+
+    try:
+        # Not read_only: merged-cell writability (below) needs
+        # ws.merged_cells.ranges, which read_only worksheets don't expose.
+        wb = openpyxl.load_workbook(template_path)
+    except Exception as exc:
+        raise TemplatePreflightError(
+            "TEMPLATE_FILE_INVALID", f"cannot open {template_path} as an xlsx workbook: {exc}"
+        ) from exc
+
+    if definition.sheet not in wb.sheetnames:
+        raise TemplatePreflightError(
+            "TEMPLATE_SHEET_MISSING",
+            f"sheet {definition.sheet!r} not found in {template_path} (available: {wb.sheetnames})",
+        )
+    ws = wb[definition.sheet]
+
+    dummy_context = {key: "" for key in _HEADER_CONTEXT_KEYS}
+    for cell_address, template_str in definition.header.items():
+        try:
+            template_str.format(**dummy_context)
+        except (KeyError, IndexError, ValueError) as exc:
+            raise TemplatePreflightError(
+                "TEMPLATE_MAPPING_INVALID",
+                f"header template for {cell_address} is invalid: {exc}",
+            ) from exc
+        if _is_non_writable_merged_cell(ws, cell_address):
+            raise TemplatePreflightError(
+                "TEMPLATE_MAPPING_INVALID",
+                f"header cell {cell_address} is inside a merged range but is not its "
+                f"top-left cell, so it cannot be written to",
+            )
+
+    unknown_fields = set(definition.items.columns) - _VALID_ITEM_FIELDS
+    if unknown_fields:
+        raise TemplatePreflightError(
+            "TEMPLATE_MAPPING_INVALID",
+            f"items.columns references unknown field(s): {sorted(unknown_fields)}",
+        )
+
+    for row in range(definition.items.start_row, definition.items.end_row + 1):
+        for column_letter in definition.items.columns.values():
+            cell_address = f"{column_letter}{row}"
+            if _is_non_writable_merged_cell(ws, cell_address):
+                raise TemplatePreflightError(
+                    "TEMPLATE_MAPPING_INVALID",
+                    f"item cell {cell_address} is inside a merged range but is not its "
+                    f"top-left cell, so it cannot be written to",
+                )
 
 
 def _header_context(projection: DocumentProjection) -> dict[str, str]:

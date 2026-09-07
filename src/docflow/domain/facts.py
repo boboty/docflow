@@ -22,12 +22,25 @@ class ShipTo:
 
 @dataclass(frozen=True, slots=True)
 class LineItemFacts:
+    """Gross-pricing input facts (Phase 0 Repair).
+
+    ``gross_amount`` is the authoritative business fact (what the real
+    contract/delivery-note pair actually settle on) - it is NOT derived from
+    ``gross_unit_price * quantity``. ``gross_unit_price`` is a separate,
+    independently supplied fact (the display unit price printed on the real
+    delivery note); the two are expected to agree, and that agreement is a
+    *validation* concern (see ``domain.validation.validate_source_consistency``),
+    never a derivation shortcut. ``net_unit_price`` is not an input fact at
+    all - it is a display value derived downstream in ``rules.money``.
+    """
+
     sku: str
     product_name: str
     specification: str
     quantity: Decimal
     unit: str
-    net_unit_price: Decimal
+    gross_unit_price: Decimal
+    gross_amount: Decimal
     tax_rate: Decimal
     remarks: str | None = None
 
@@ -47,6 +60,10 @@ class DocumentFactPack:
     seller_contact: str | None = None
     seller_phone: str | None = None
     seller_address: str | None = None
+    # Optional independently-supplied aggregate fact (e.g. from an upstream
+    # PO total). When present, validation checks Σ item.gross_amount against
+    # it; when absent, aggregate consistency is simply not checked.
+    gross_total: Decimal | None = None
     # Escape hatch for document-specific values not yet promoted to a
     # canonical field. Deliberately untyped and unstructured (YAGNI) -
     # do not build a generic schema around this.

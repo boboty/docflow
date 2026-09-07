@@ -1,8 +1,15 @@
 """Batch generation orchestration.
 
-Wires together: batch input -> validation -> derivation -> rendering ->
-manifest. A single record's failure never aborts the batch; it is recorded
-as FAILED with structured issues and processing continues.
+Wires together: template preflight -> batch input -> validation ->
+derivation -> rendering -> manifest.
+
+Two distinct failure scopes (Phase 0 Repair section 5):
+  - Template-level (file missing/invalid, sheet missing, mapping invalid):
+    the whole batch cannot possibly succeed, so it fails fast via
+    TemplatePreflightError / BatchFileError *before* the record loop runs.
+  - Record-level (missing fields, bad amounts, over capacity): a single
+    record's failure never aborts the batch; it is recorded as FAILED with
+    structured issues and processing continues.
 """
 from __future__ import annotations
 
@@ -13,20 +20,21 @@ from pathlib import Path
 from typing import Any
 
 from docflow.adapters.batch_input import (
-    BatchFileError,
     BatchRecordError,
     fact_pack_from_record,
     load_batch_records,
 )
 from docflow.domain.document import DocumentProjection, DocumentType, build_projection
-from docflow.domain.facts import DocumentFactPack
 from docflow.domain.validation import (
     ValidationResult,
-    validate_amounts,
+    validate_aggregate_consistency,
     validate_cross_document,
+    validate_derived_consistency,
     validate_fact_pack,
+    validate_source_consistency,
 )
-from docflow.renderers.xlsx import TemplateRenderError, render
+from docflow.renderers.xlsx import TemplatePreflightError, TemplateRenderError, preflight, render
+from docflow.templates.definition import TemplateDefinitionError
 from docflow.templates.registry import TemplateRegistry
 
 PASS = "PASS"
@@ -58,7 +66,7 @@ class BatchSummary:
     entries: tuple[ManifestEntry, ...]
 
 
-def _snapshot_hash(raw: dict[str, Any]) -> str:
+def _snapshot_hash(raw: Any) -> str:
     canonical = json.dumps(raw, sort_keys=True, ensure_ascii=False)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
@@ -69,6 +77,16 @@ def _template_version(template_id: str) -> str:
 
 def _issue_strings(result: ValidationResult) -> list[str]:
     return [f"{issue.code}: {issue.message}" for issue in result.issues]
+
+
+def _preflight_templates(registry: TemplateRegistry, template_paths: dict[DocumentType, Path]) -> None:
+    """Whole-batch gate: raises if any template/mapping is unusable."""
+    for document_type, path in template_paths.items():
+        try:
+            definition = registry.get(document_type)
+        except (FileNotFoundError, TemplateDefinitionError) as exc:
+            raise TemplatePreflightError("TEMPLATE_MAPPING_INVALID", str(exc)) from exc
+        preflight(definition, path)
 
 
 def generate_batch(
@@ -84,15 +102,18 @@ def generate_batch(
         DocumentType.DELIVERY_NOTE_V1: delivery_template_path,
     }
 
-    try:
-        raw_records = load_batch_records(batch_file)
-    except BatchFileError as exc:
-        raise SystemExit(str(exc)) from exc
+    # Template-level preflight: must happen before any record is touched.
+    # Errors here (BatchFileError, TemplatePreflightError) are intentionally
+    # NOT caught - they propagate to the caller as a whole-batch failure,
+    # never disguised as a per-record FAILED entry.
+    _preflight_templates(registry, template_paths)
+    raw_records = load_batch_records(batch_file)
 
     entries: list[ManifestEntry] = []
 
     for index, raw in enumerate(raw_records):
-        business_reference = str(raw.get("business_reference") or f"record-{index}")
+        business_reference = str(raw.get("business_reference") or f"record-{index}") \
+            if isinstance(raw, dict) else f"record-{index}"
         snapshot_hash = _snapshot_hash(raw)
 
         try:
@@ -103,18 +124,20 @@ def generate_batch(
             )
             continue
 
-        fact_result = validate_fact_pack(fact_pack)
-        if not fact_result.is_valid:
+        record_issues = _issue_strings(validate_fact_pack(fact_pack))
+        record_issues += _issue_strings(validate_source_consistency(fact_pack))
+        record_issues += _issue_strings(validate_aggregate_consistency(fact_pack))
+        if record_issues:
             entries.extend(
-                _failed_entries(business_reference, _issue_strings(fact_result), snapshot_hash)
+                _failed_entries(fact_pack.business_reference, record_issues, snapshot_hash)
             )
             continue
 
         contract_projection = build_projection(fact_pack, DocumentType.PROCUREMENT_CONTRACT_V1)
         delivery_projection = build_projection(fact_pack, DocumentType.DELIVERY_NOTE_V1)
 
-        contract_issues = _issue_strings(validate_amounts(contract_projection))
-        delivery_issues = _issue_strings(validate_amounts(delivery_projection))
+        contract_issues = _issue_strings(validate_derived_consistency(contract_projection))
+        delivery_issues = _issue_strings(validate_derived_consistency(delivery_projection))
 
         cross_issues = _issue_strings(validate_cross_document(contract_projection, delivery_projection))
         contract_issues += cross_issues

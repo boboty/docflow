@@ -4,11 +4,27 @@ All monetary derivation for documents must go through this module. Renderers
 must never compute money values themselves - they only consume already
 -derived projection values.
 
-Rounding policy: round-half-up to 2 decimal places, applied at the point
-each derived value is produced (net_amount, tax_amount, then gross_amount
-as their sum, then gross_unit_price from gross_amount). This mirrors how
-the real paper contract/delivery-note pair round line by line rather than
-rounding a grand total in one step.
+Pricing model (Phase 0 Repair): **gross pricing**. ``gross_amount`` is the
+authoritative source fact per line (what the real business documents
+settle on); tax-exclusive figures are display values derived FROM it, never
+the other way around:
+
+    net_amount     = round(gross_amount / (1 + tax_rate), 2)
+    tax_amount     = gross_amount - net_amount
+    net_unit_price = round(gross_unit_price / (1 + tax_rate), 2)
+
+Rounding policy: round-half-up to 2 decimal places. ``net_amount`` is
+rounded once, directly from the source ``gross_amount``; ``tax_amount`` is
+then whatever remains (gross - net), which guarantees
+``net_amount + tax_amount == gross_amount`` exactly, with no compounding
+rounding error. ``net_unit_price`` is rounded independently the same way,
+purely for display - it is never used to derive line totals.
+
+Earlier (pre-repair) revisions of this module treated the tax-exclusive
+*unit price* as authoritative and multiplied it forward by quantity. That
+does not match real business documents, where the unit price shown is
+itself a rounded-for-display figure and the line amount is the true
+source fact. See docs/phase-0-repair-task-brief.md.
 """
 from __future__ import annotations
 
@@ -19,9 +35,21 @@ from docflow.domain.facts import LineItemFacts
 
 CENTS = Decimal("0.01")
 
+# Source-consistency tolerance policy: gross_unit_price is assumed to be a
+# value rounded to 2dp from gross_amount / quantity, so the worst-case gap
+# between gross_unit_price * quantity and the true gross_amount is half a
+# rounding unit per unit of quantity (0.005 * quantity), floored at one
+# cent to allow for a single-unit line. See domain.validation.
+CONSISTENCY_TOLERANCE_PER_UNIT = Decimal("0.005")
+MIN_CONSISTENCY_TOLERANCE = Decimal("0.01")
+
 
 def round_money(value: Decimal) -> Decimal:
     return value.quantize(CENTS, rounding=ROUND_HALF_UP)
+
+
+def source_consistency_tolerance(quantity: Decimal) -> Decimal:
+    return max(MIN_CONSISTENCY_TOLERANCE, round_money(quantity * CONSISTENCY_TOLERANCE_PER_UNIT))
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,8 +59,8 @@ class LineItemAmounts:
     specification: str
     quantity: Decimal
     unit: str
-    net_unit_price: Decimal
     gross_unit_price: Decimal
+    net_unit_price: Decimal
     net_amount: Decimal
     tax_amount: Decimal
     gross_amount: Decimal
@@ -47,18 +75,18 @@ class Totals:
 
 
 def compute_line_item_amounts(item: LineItemFacts) -> LineItemAmounts:
-    net_amount = round_money(item.net_unit_price * item.quantity)
-    tax_amount = round_money(net_amount * item.tax_rate)
-    gross_amount = net_amount + tax_amount
-    gross_unit_price = round_money(gross_amount / item.quantity)
+    gross_amount = round_money(item.gross_amount)
+    net_amount = round_money(gross_amount / (1 + item.tax_rate))
+    tax_amount = gross_amount - net_amount
+    net_unit_price = round_money(item.gross_unit_price / (1 + item.tax_rate))
     return LineItemAmounts(
         sku=item.sku,
         product_name=item.product_name,
         specification=item.specification,
         quantity=item.quantity,
         unit=item.unit,
-        net_unit_price=round_money(item.net_unit_price),
-        gross_unit_price=gross_unit_price,
+        gross_unit_price=round_money(item.gross_unit_price),
+        net_unit_price=net_unit_price,
         net_amount=net_amount,
         tax_amount=tax_amount,
         gross_amount=gross_amount,
