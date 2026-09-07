@@ -1,0 +1,45 @@
+[
+  {
+    "business_reference": "EXAMPLE-0001",
+    "contract_no": "EX-CT-0001",
+    "delivery_no": "EX-DN-0001",
+    "contract_date": "2026-05-16",
+    "delivery_date": "2026-06-09",
+    "buyer": "示例采购方有限公司",
+    "seller": "示例供应方有限公司",
+    "seller_contact": "示例联系人",
+    "seller_phone": "10000000000",
+    "seller_address": "示例省示例市示例地址1号",
+    "ship_to": {
+      "company": "示例收货单位",
+      "contact": "示例收货联系人",
+      "phone": "20000000000",
+      "address": "示例省示例市示例收货地址2号"
+    },
+    "currency": "CNY",
+    "gross_total": "2192.00",
+    "items": [
+      {
+        "sku": "SKU-EXAMPLE-001",
+        "product_name": "示例产品A",
+        "specification": "型号SKU-EXAMPLE-001",
+        "quantity": "42",
+        "unit": "双",
+        "gross_unit_price": "49",
+        "gross_amount": "2058.00",
+        "tax_rate": "0.13"
+      },
+      {
+        "sku": "SKU-EXAMPLE-002",
+        "product_name": "示例产品B",
+        "specification": "型号SKU-EXAMPLE-002",
+        "quantity": "2",
+        "unit": "个",
+        "gross_unit_price": "67",
+        "gross_amount": "134.00",
+        "tax_rate": "0.13",
+        "remarks": "示例备注"
+      }
+    ]
+  }
+]

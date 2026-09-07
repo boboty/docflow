@@ -16,6 +16,14 @@ business data
   -> generated documents + manifest
 ```
 
+## Using DocFlow from an agent
+
+An agent with local shell/filesystem access should follow
+[skills/docflow/SKILL.md](skills/docflow/SKILL.md) rather than calling any
+Python API directly - it documents the input contract, exit-code
+semantics, manifest handling, and (most importantly) the boundary that
+the agent must never compute an authoritative money fact itself.
+
 ## What this is not
 
 - Not a general-purpose Office automation tool.
