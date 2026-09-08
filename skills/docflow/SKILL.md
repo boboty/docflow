@@ -415,9 +415,11 @@ changes nothing - that's the correct behavior, not an error to work
 around.
 
 Organization seals are separate managed static assets, not transaction
-facts and not part of a template file. When the user asks to register or
-replace one, use the managed import command instead of copying the PNG or
-editing YAML by hand:
+facts and not part of a template file. Every Organization may independently
+own an optional seal; never assume seals belong only to suppliers.
+`catalog import-seal` applies equally to buyer, supplier, and ship-to
+organizations. When the user asks to register or replace one, use the
+managed import command instead of copying the PNG or editing YAML by hand:
 
 ```bash
 "$DOCFLOW" catalog import-seal \
@@ -429,7 +431,13 @@ Add `--replace` only when the user explicitly asks to replace the current
 seal. The command validates PNG bytes, copies the asset into
 `.docflow/assets/seals/<organization>.png`, and stores a relative
 `seal.path`. Missing/invalid optional seal assets during generation are
-reported as skipped enhancements and do not affect PASS/FAIL.
+reported independently as skipped enhancements and do not affect another
+participant's seal or document PASS/FAIL. The template mapping decides
+which participant image slots appear in each document: `buyer_seal`,
+`seller_seal`, and/or `ship_to_seal`. Do not ask the user to supply a
+missing participant seal unless the user explicitly requires that seal.
+The installed Skill remains immutable during task execution: never modify
+its mappings or bundled runtime while using it to generate documents.
 
 **Resolving which path to actually use, in order:**
 

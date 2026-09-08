@@ -98,10 +98,12 @@ docflow catalog import-seal \
 # re-run with --replace to replace the managed seal
 ```
 
-During generation, the seller is matched deterministically to a supplier
-organization. A mapped seal is inserted at the template-defined position.
-A missing or unreadable optional seal is recorded in manifest
-`enhancements` and never changes document PASS/FAIL.
+During generation, each template image slot independently resolves its
+participant: `buyer_seal` uses the buyer organization, `seller_seal` the
+supplier, and `ship_to_seal` the ship-to organization. A missing or
+unreadable optional seal is recorded for that slot in manifest
+`enhancements`; other seals still render and document PASS/FAIL is
+unchanged.
 
 Real Catalog data is never committed; `skills/docflow/examples/catalog/*.example.yaml`
 is a synthetic schema reference only.

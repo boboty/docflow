@@ -36,7 +36,7 @@ from docflow.domain.validation import (
     validate_source_consistency,
 )
 from docflow.renderers.xlsx import TemplatePreflightError, TemplateRenderError, preflight, render
-from docflow.templates.definition import TemplateDefinitionError
+from docflow.templates.definition import TemplateDefinition, TemplateDefinitionError
 from docflow.templates.registry import TemplateRegistry
 
 PASS = "PASS"
@@ -45,6 +45,12 @@ FAILED = "FAILED"
 _OUTPUT_FILENAMES = {
     DocumentType.PROCUREMENT_CONTRACT_V1: "procurement-contract.xlsx",
     DocumentType.DELIVERY_NOTE_V1: "delivery-note.xlsx",
+}
+
+_PARTICIPANT_IMAGE_ROLES = {
+    "buyer_seal": "buyer",
+    "seller_seal": "supplier",
+    "ship_to_seal": "ship_to",
 }
 
 
@@ -118,7 +124,7 @@ def generate_batch(
         try:
             catalog = load_catalog(catalog_root)
         except CatalogError as exc:
-            catalog_note = f"IMAGE_SKIPPED seller_seal: catalog unavailable ({exc.code})"
+            catalog_note = f"catalog unavailable ({exc.code})"
 
     entries: list[ManifestEntry] = []
 
@@ -146,7 +152,6 @@ def generate_batch(
 
         contract_projection = build_projection(fact_pack, DocumentType.PROCUREMENT_CONTRACT_V1)
         delivery_projection = build_projection(fact_pack, DocumentType.DELIVERY_NOTE_V1)
-        image_assets, image_notes = _resolve_image_assets(catalog, catalog_root, fact_pack.seller, catalog_note)
 
         contract_issues = _issue_strings(validate_derived_consistency(contract_projection))
         delivery_issues = _issue_strings(validate_derived_consistency(delivery_projection))
@@ -159,14 +164,14 @@ def generate_batch(
             _render_or_fail(
                 registry, template_paths, output_dir,
                 DocumentType.PROCUREMENT_CONTRACT_V1, contract_projection,
-                contract_issues, snapshot_hash, image_assets, image_notes,
+                contract_issues, snapshot_hash, catalog, catalog_root, catalog_note,
             )
         )
         entries.append(
             _render_or_fail(
                 registry, template_paths, output_dir,
                 DocumentType.DELIVERY_NOTE_V1, delivery_projection,
-                delivery_issues, snapshot_hash, image_assets, image_notes,
+                delivery_issues, snapshot_hash, catalog, catalog_root, catalog_note,
             )
         )
 
@@ -182,32 +187,55 @@ def generate_batch(
 
 
 def _resolve_image_assets(
+    definition: TemplateDefinition,
     catalog: Catalog | None,
     catalog_root: Path | None,
-    seller: str,
+    projection: DocumentProjection,
     catalog_note: str | None,
 ) -> tuple[dict[str, Path], tuple[str, ...]]:
-    if catalog_note:
-        return {}, (catalog_note,)
-    if catalog is None or catalog_root is None:
-        return {}, ()
-    query = normalize(seller)
-    matches = [
-        org for org in catalog.organizations.values()
-        if "supplier" in org.roles
-        and query in {normalize(org.id), normalize(org.name), *(normalize(alias) for alias in org.aliases)}
-    ]
-    if len(matches) != 1:
-        reason = "not found" if not matches else "ambiguous"
-        return {}, (f"IMAGE_SKIPPED seller_seal: supplier organization {reason}",)
-    org = matches[0]
-    if org.seal is None:
-        return {}, (f"IMAGE_SKIPPED seller_seal: organization {org.id!r} has no seal",)
-    candidate = Path(org.seal.path)
-    seal_path = candidate if candidate.is_absolute() else (catalog_root / candidate).resolve()
-    if not seal_path.is_file():
-        return {}, (f"IMAGE_SKIPPED seller_seal: asset missing for organization {org.id!r}",)
-    return {"seller_seal": seal_path}, ()
+    participant_names = {
+        "buyer_seal": projection.buyer,
+        "seller_seal": projection.seller,
+        "ship_to_seal": projection.ship_to.company,
+    }
+    image_assets: dict[str, Path] = {}
+    enhancements: list[str] = []
+
+    for image_id in definition.images:
+        role = _PARTICIPANT_IMAGE_ROLES.get(image_id)
+        participant_name = participant_names.get(image_id)
+        if role is None or participant_name is None:
+            enhancements.append(f"IMAGE_SKIPPED {image_id}: unsupported participant image slot")
+            continue
+        if catalog_note:
+            enhancements.append(f"IMAGE_SKIPPED {image_id}: catalog unavailable")
+            continue
+        if catalog is None or catalog_root is None:
+            enhancements.append(f"IMAGE_SKIPPED {image_id}: asset not configured")
+            continue
+
+        query = normalize(participant_name)
+        matches = [
+            org for org in catalog.organizations.values()
+            if role in org.roles
+            and query in {normalize(org.id), normalize(org.name), *(normalize(alias) for alias in org.aliases)}
+        ]
+        if len(matches) != 1:
+            reason = "missing" if not matches else "ambiguous"
+            enhancements.append(f"IMAGE_SKIPPED {image_id}: {role} organization {reason}")
+            continue
+        org = matches[0]
+        if org.seal is None:
+            enhancements.append(f"IMAGE_SKIPPED {image_id}: organization {org.id!r} has no seal")
+            continue
+        candidate = Path(org.seal.path)
+        seal_path = candidate if candidate.is_absolute() else (catalog_root / candidate).resolve()
+        if not seal_path.is_file():
+            enhancements.append(f"IMAGE_SKIPPED {image_id}: asset missing for organization {org.id!r}")
+            continue
+        image_assets[image_id] = seal_path
+
+    return image_assets, tuple(enhancements)
 
 
 def _failed_entries(business_reference: str, issues: list[str], snapshot_hash: str) -> list[ManifestEntry]:
@@ -234,8 +262,9 @@ def _render_or_fail(
     projection: DocumentProjection,
     issues: list[str],
     snapshot_hash: str,
-    image_assets: dict[str, Path],
-    image_notes: tuple[str, ...],
+    catalog: Catalog | None,
+    catalog_root: Path | None,
+    catalog_note: str | None,
 ) -> ManifestEntry:
     definition = registry.get(document_type)
 
@@ -253,6 +282,9 @@ def _render_or_fail(
 
     relative_output = Path(projection.business_reference) / _OUTPUT_FILENAMES[document_type]
     output_path = output_dir / relative_output
+    image_assets, image_notes = _resolve_image_assets(
+        definition, catalog, catalog_root, projection, catalog_note,
+    )
 
     try:
         render_notes = render(
@@ -271,6 +303,18 @@ def _render_or_fail(
             source_snapshot_hash=snapshot_hash,
         )
 
+    # Exactly one enhancement per declared slot, in template order.
+    # A generation-level reason is more specific than the renderer's
+    # generic "asset not configured" fallback.
+    image_enhancements: list[str] = []
+    for image_id in definition.images:
+        prefixes = (f"IMAGE_INSERTED {image_id}", f"IMAGE_SKIPPED {image_id}:")
+        generation_note = next((note for note in image_notes if note.startswith(prefixes)), None)
+        render_note = next((note for note in render_notes if note.startswith(prefixes)), None)
+        selected_note = generation_note or render_note
+        if selected_note is not None:
+            image_enhancements.append(selected_note)
+
     return ManifestEntry(
         business_reference=projection.business_reference,
         document_type=document_type.value,
@@ -280,10 +324,7 @@ def _render_or_fail(
         validation_status=PASS,
         issues=(),
         source_snapshot_hash=snapshot_hash,
-        enhancements=tuple(dict.fromkeys((
-            *image_notes,
-            *(note for note in render_notes if not image_notes or "asset not configured" not in note),
-        ))),
+        enhancements=tuple(image_enhancements),
     )
 
 
