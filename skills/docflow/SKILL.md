@@ -53,7 +53,7 @@ Every example below assumes `DOCFLOW` is set that way; wherever you see
 
 The only thing `$DOCFLOW` itself needs at runtime is `uv`. `runtime/run.py`
 is a [PEP 723](https://peps.python.org/pep-0723/) script - its own inline
-metadata declares its dependencies (openpyxl, PyYAML), and `uv run`
+metadata declares its dependencies (openpyxl, Pillow, PyYAML), and `uv run`
 resolves *only those* into an isolated, uv-managed environment. There is
 no `pyproject.toml`, no setuptools build, and no install (editable or
 otherwise) of a `docflow` package - `run.py` puts this runtime's own
@@ -414,6 +414,23 @@ an already-registered key fails with `TEMPLATE_ALREADY_EXISTS` and
 changes nothing - that's the correct behavior, not an error to work
 around.
 
+Organization seals are separate managed static assets, not transaction
+facts and not part of a template file. When the user asks to register or
+replace one, use the managed import command instead of copying the PNG or
+editing YAML by hand:
+
+```bash
+"$DOCFLOW" catalog import-seal \
+  --organization linyi_yier \
+  --source "/external/path/seal.png"
+```
+
+Add `--replace` only when the user explicitly asks to replace the current
+seal. The command validates PNG bytes, copies the asset into
+`.docflow/assets/seals/<organization>.png`, and stores a relative
+`seal.path`. Missing/invalid optional seal assets during generation are
+reported as skipped enhancements and do not affect PASS/FAIL.
+
 **Resolving which path to actually use, in order:**
 
 1. If the user explicitly gives you a path for *this* task, use it - even
@@ -606,7 +623,8 @@ stdout. The manifest is the structured source of truth. Each entry has:
 ```text
 business_reference, document_type, template_id, template_version,
 output_file, validation_status ("PASS"/"FAILED"), issues (list of
-"<CODE>: <message>" strings), source_snapshot_hash
+"<CODE>: <message>" strings), source_snapshot_hash, enhancements (list
+containing optional `IMAGE_INSERTED` / `IMAGE_SKIPPED` delivery notes)
 ```
 
 `output_file` is relative to the output directory you passed - join them

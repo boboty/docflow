@@ -3,6 +3,7 @@
 # requires-python = ">=3.11"
 # dependencies = [
 #   "openpyxl>=3.1",
+#   "Pillow>=10.0",
 #   "PyYAML>=6.0",
 # ]
 # ///

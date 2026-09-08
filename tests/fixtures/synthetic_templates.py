@@ -10,12 +10,35 @@ from __future__ import annotations
 from pathlib import Path
 
 import openpyxl
+from openpyxl.worksheet.pagebreak import Break
 
 CONTRACT_ITEM_START_ROW = 9
 CONTRACT_ITEM_END_ROW = 26  # capacity 18, matches the real template
 
 DELIVERY_ITEM_START_ROW = 7
 DELIVERY_ITEM_END_ROW = 24  # capacity 18, matches the real template
+
+
+def _configure_print(ws, print_area: str, print_title_rows: str, row_break: int) -> None:
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.orientation = ws.ORIENTATION_PORTRAIT
+    ws.page_setup.scale = 95
+    ws.page_setup.fitToWidth = 1
+    ws.page_setup.fitToHeight = 0
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+    ws.page_margins.left = 0.25
+    ws.page_margins.right = 0.25
+    ws.page_margins.top = 0.5
+    ws.page_margins.bottom = 0.5
+    ws.print_options.horizontalCentered = True
+    ws.print_options.verticalCentered = False
+    ws.print_options.gridLines = False
+    ws.print_area = print_area
+    ws.print_title_rows = print_title_rows
+    ws.row_breaks.append(Break(id=row_break))
+    ws.col_breaks.append(Break(id=4))
+    ws.oddHeader.center.text = "DocFlow 测试页眉"
+    ws.oddFooter.right.text = "第 &P 页，共 &N 页"
 
 
 def build_contract_template(path: Path) -> Path:
@@ -103,6 +126,8 @@ def build_contract_template(path: Path) -> Path:
     ws.merge_cells("F49:I49")
     ws["F49"] = "时间："
 
+    _configure_print(ws, "A1:I49", "1:8", 28)
+
     wb.save(path)
     return path
 
@@ -162,6 +187,8 @@ def build_delivery_template(path: Path) -> Path:
     ws["A33"] = "送货单位：示例供应商有限公司"
     ws.merge_cells("E33:H33")
     ws["E33"] = "收货单位：示例收货单位"
+
+    _configure_print(ws, "A1:H33", "1:6", 25)
 
     wb.save(path)
     return path

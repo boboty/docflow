@@ -33,6 +33,11 @@ class Address:
 
 
 @dataclass(frozen=True, slots=True)
+class Seal:
+    path: str
+
+
+@dataclass(frozen=True, slots=True)
 class Organization:
     id: str
     name: str
@@ -40,6 +45,7 @@ class Organization:
     aliases: tuple[str, ...] = ()
     contacts: tuple[Contact, ...] = ()
     addresses: tuple[Address, ...] = ()
+    seal: Seal | None = None
 
 
 @dataclass(frozen=True, slots=True)

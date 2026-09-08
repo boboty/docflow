@@ -19,6 +19,8 @@ Three mapping sections, all projection-only:
     transaction's facts at all, it belongs in `header` or `text`, not in
     the "static boilerplate we don't touch" bucket.
   - `items`: the line-item table (start_row/end_row + per-field columns).
+  - `images`: optional managed image placements. It describes layout only;
+    image bytes are supplied separately by the generation orchestrator.
 
 Every parsing failure here (bad YAML, wrong types, illegal row numbers,
 malformed cell/column references) is normalized to TemplateDefinitionError
@@ -64,6 +66,15 @@ class ItemsMapping:
 
 
 @dataclass(frozen=True, slots=True)
+class ImageMapping:
+    anchor: str
+    width_mm: float
+    height_mm: float
+    x_offset_px: int = 0
+    y_offset_px: int = 0
+
+
+@dataclass(frozen=True, slots=True)
 class TemplateDefinition:
     id: str
     format: str
@@ -71,6 +82,7 @@ class TemplateDefinition:
     header: dict[str, str]
     text: dict[str, str]
     items: ItemsMapping
+    images: dict[str, ImageMapping]
 
 
 def _validate_column_letter(column: str, path: Path, what: str) -> None:
@@ -160,6 +172,40 @@ def _parse_cell_text_mapping(section_raw: object, section_name: str, path: Path)
     return result
 
 
+def _parse_images(images_raw: object, path: Path) -> dict[str, ImageMapping]:
+    if images_raw is None:
+        return {}
+    if not isinstance(images_raw, dict):
+        raise TemplateDefinitionError(f"malformed template mapping {path}: 'images' must be a mapping")
+
+    result: dict[str, ImageMapping] = {}
+    for image_id, raw in images_raw.items():
+        where = f"images.{image_id}"
+        if not isinstance(image_id, str) or not image_id or not isinstance(raw, dict):
+            raise TemplateDefinitionError(f"malformed template mapping {path}: {where} must be a mapping")
+        anchor = raw.get("anchor")
+        if not isinstance(anchor, str) or not _CELL_ADDRESS_RE.match(anchor):
+            raise TemplateDefinitionError(f"malformed template mapping {path}: invalid {where}.anchor {anchor!r}")
+        column_letters, row = coordinate_from_string(anchor)
+        if row > MAX_EXCEL_ROW or column_index_from_string(column_letters) > MAX_EXCEL_COLUMN:
+            raise TemplateDefinitionError(f"malformed template mapping {path}: {where}.anchor is outside Excel's grid")
+        try:
+            width_mm = float(raw["width_mm"])
+            height_mm = float(raw["height_mm"])
+            x_offset_px = int(raw.get("x_offset_px", 0))
+            y_offset_px = int(raw.get("y_offset_px", 0))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TemplateDefinitionError(
+                f"malformed template mapping {path}: {where} requires numeric width_mm/height_mm and integer offsets"
+            ) from exc
+        if width_mm <= 0 or height_mm <= 0 or x_offset_px < 0 or y_offset_px < 0:
+            raise TemplateDefinitionError(
+                f"malformed template mapping {path}: {where} dimensions must be positive and offsets non-negative"
+            )
+        result[image_id] = ImageMapping(anchor, width_mm, height_mm, x_offset_px, y_offset_px)
+    return result
+
+
 def load_template_definition(path: Path) -> TemplateDefinition:
     try:
         with path.open("r", encoding="utf-8") as f:
@@ -182,6 +228,7 @@ def load_template_definition(path: Path) -> TemplateDefinition:
         header=_parse_cell_text_mapping(raw.get("header"), "header", path),
         text=_parse_cell_text_mapping(raw.get("text"), "text", path),
         items=_parse_items(raw["items"], path),
+        images=_parse_images(raw.get("images"), path),
     )
 
 

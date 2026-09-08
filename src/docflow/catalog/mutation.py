@@ -22,11 +22,14 @@ Two distinct mutation paths, matching a clean ownership boundary:
     so a proposed template is validated with the exact same rules
     `docflow generate` would apply to it - not a re-implementation of that
     validation.
+  - `import_seal()` / `catalog import-seal`: validates and atomically
+    manages one PNG plus its organization `seal.path` entry.
 """
 from __future__ import annotations
 
 import copy
 import json
+import re
 import shutil
 from pathlib import Path
 from typing import Any
@@ -34,7 +37,7 @@ from typing import Any
 import yaml
 
 from docflow.catalog.loader import load_catalog, load_raw_sections, parse_catalog_dict
-from docflow.catalog.root import managed_template_root
+from docflow.catalog.root import managed_seal_root, managed_template_root
 from docflow.domain.document import DocumentType
 from docflow.renderers.xlsx import preflight
 from docflow.templates.definition import TemplateDefinitionError
@@ -296,6 +299,87 @@ def import_template(catalog_root: Path, key: str, document_type: str, source: Pa
         if yaml_tmp_path.exists():
             yaml_tmp_path.unlink()
         raise CatalogMutationError("TEMPLATE_IMPORT_FAILED", f"template import could not be committed: {exc}") from exc
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        if backup_path.exists():
+            backup_path.unlink()
+
+
+def import_seal(catalog_root: Path, organization: str, source: Path, replace: bool) -> None:
+    """Validate and atomically import one organization's managed PNG seal."""
+    organizations_raw, products_raw, templates_raw = load_raw_sections(catalog_root)
+    if organization not in organizations_raw:
+        raise CatalogMutationError("ORGANIZATION_NOT_FOUND", f"organization {organization!r} does not exist")
+    if re.fullmatch(r"[A-Za-z0-9._-]+", organization) is None:
+        raise CatalogMutationError(
+            "INVALID_ORGANIZATION_ID",
+            f"organization id {organization!r} cannot be used as a managed seal filename",
+        )
+
+    if not source.is_file():
+        raise CatalogMutationError("SEAL_SOURCE_MISSING", f"seal source not found: {source}")
+    try:
+        from PIL import Image
+        with Image.open(source) as image:
+            image.verify()
+            if image.format != "PNG":
+                raise ValueError(f"expected PNG, got {image.format or 'unknown'}")
+    except (OSError, ValueError) as exc:
+        raise CatalogMutationError("SEAL_SOURCE_INVALID", f"cannot read {source} as a PNG image: {exc}") from exc
+
+    managed_dir = managed_seal_root(catalog_root)
+    final_path = managed_dir / f"{organization}.png"
+    existing_seal = organizations_raw[organization].get("seal")
+    if (existing_seal is not None or final_path.exists()) and not replace:
+        raise CatalogMutationError(
+            "SEAL_ALREADY_EXISTS", f"seal for {organization!r} already exists - pass --replace to overwrite it"
+        )
+
+    relative_path = f"../assets/seals/{organization}.png"
+    candidate_organizations = copy.deepcopy(organizations_raw)
+    candidate_org = dict(candidate_organizations[organization])
+    candidate_org["seal"] = {"path": relative_path}
+    candidate_organizations[organization] = candidate_org
+    parse_catalog_dict(candidate_organizations, products_raw, templates_raw)
+
+    catalog_path = catalog_root / "organizations.yaml"
+    catalog_existed = catalog_path.exists()
+    catalog_bytes = catalog_path.read_bytes() if catalog_existed else None
+    managed_existed = final_path.exists()
+    managed_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = managed_dir / f".{organization}.png.tmp"
+    backup_path = managed_dir / f".{organization}.png.bak"
+    backup_ready = False
+    final_replaced = False
+    try:
+        shutil.copyfile(source, tmp_path)
+        if managed_existed:
+            shutil.copyfile(final_path, backup_path)
+            backup_ready = True
+        tmp_path.replace(final_path)
+        final_replaced = True
+        _write_yaml_atomic(catalog_path, "organizations", candidate_organizations)
+        load_catalog(catalog_root)
+    except Exception as exc:
+        if final_replaced and managed_existed and backup_ready:
+            backup_path.replace(final_path)
+        elif final_replaced and not managed_existed and final_path.exists():
+            final_path.unlink()
+        yaml_tmp_path = catalog_path.with_name(catalog_path.name + ".tmp")
+        if catalog_existed:
+            rollback_path = catalog_path.with_name(catalog_path.name + ".rollback.tmp")
+            try:
+                rollback_path.write_bytes(catalog_bytes or b"")
+                rollback_path.replace(catalog_path)
+            finally:
+                if rollback_path.exists():
+                    rollback_path.unlink()
+        elif catalog_path.exists():
+            catalog_path.unlink()
+        if yaml_tmp_path.exists():
+            yaml_tmp_path.unlink()
+        raise CatalogMutationError("SEAL_IMPORT_FAILED", f"seal import could not be committed: {exc}") from exc
     finally:
         if tmp_path.exists():
             tmp_path.unlink()

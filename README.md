@@ -87,6 +87,22 @@ docflow catalog import-template \
 absolute-path entries (from before this existed) and managed relative
 ones, always returning an absolute path usable straight away.
 
+Organization seals use the same managed-asset boundary. Import an
+optional PNG by organization id; DocFlow copies it to
+`.docflow/assets/seals/` and stores a Catalog-root-relative path:
+
+```bash
+docflow catalog import-seal \
+  --organization linyi_yier \
+  --source /external/path/seal.png
+# re-run with --replace to replace the managed seal
+```
+
+During generation, the seller is matched deterministically to a supplier
+organization. A mapped seal is inserted at the template-defined position.
+A missing or unreadable optional seal is recorded in manifest
+`enhancements` and never changes document PASS/FAIL.
+
 Real Catalog data is never committed; `skills/docflow/examples/catalog/*.example.yaml`
 is a synthetic schema reference only.
 

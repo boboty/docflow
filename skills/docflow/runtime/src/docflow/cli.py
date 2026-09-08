@@ -14,6 +14,7 @@ from docflow.catalog.mutation import (
     CatalogMutationError,
     ChangeFileError,
     apply_operations,
+    import_seal,
     import_template,
     load_operations,
 )
@@ -33,6 +34,7 @@ def _build_parser() -> argparse.ArgumentParser:
     generate.add_argument("--contract-template", required=True, type=Path, help="Real 采购合同 xlsx template")
     generate.add_argument("--delivery-template", required=True, type=Path, help="Real 送货单 xlsx template")
     generate.add_argument("--output", required=True, type=Path, help="Output directory")
+    generate.add_argument("--catalog-root", type=Path, default=None, help="Catalog root for optional managed assets")
 
     catalog = subparsers.add_parser("catalog", help="Reference Catalog operations")
     catalog_sub = catalog.add_subparsers(dest="catalog_command", required=True)
@@ -65,6 +67,12 @@ def _build_parser() -> argparse.ArgumentParser:
     import_template_p.add_argument("--source", required=True, type=Path, help="External template xlsx to import")
     import_template_p.add_argument("--replace", action="store_true", help="Overwrite an existing entry for --key")
 
+    import_seal_p = catalog_sub.add_parser("import-seal", help="Import a workspace-managed organization seal PNG")
+    import_seal_p.add_argument("--catalog-root", type=Path, default=None)
+    import_seal_p.add_argument("--organization", required=True, help="Existing organization id")
+    import_seal_p.add_argument("--source", required=True, type=Path, help="External PNG seal to import")
+    import_seal_p.add_argument("--replace", action="store_true", help="Overwrite the organization's existing seal")
+
     return parser
 
 
@@ -75,6 +83,7 @@ def _handle_generate(args: argparse.Namespace) -> int:
             contract_template_path=args.contract_template,
             delivery_template_path=args.delivery_template,
             output_dir=args.output,
+            catalog_root=resolve_catalog_root(args.catalog_root),
         )
     except TemplatePreflightError as exc:
         print(f"TEMPLATE PREFLIGHT FAILED [{exc.code}]: {exc}", file=sys.stderr)
@@ -172,6 +181,17 @@ def _handle_catalog(args: argparse.Namespace) -> int:
             print("No changes were written.", file=sys.stderr)
             return 2
         print(f"template {args.key!r} imported into {root}")
+        return 0
+
+    if args.catalog_command == "import-seal":
+        try:
+            import_seal(root, args.organization, args.source, args.replace)
+        except (CatalogMutationError, CatalogError) as exc:
+            code = getattr(exc, "code", "SEAL_IMPORT_ERROR")
+            print(f"SEAL IMPORT REJECTED [{code}]: {exc}", file=sys.stderr)
+            print("No changes were written.", file=sys.stderr)
+            return 2
+        print(f"seal for {args.organization!r} imported into {root}")
         return 0
 
     return 1

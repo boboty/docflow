@@ -10,6 +10,9 @@ organizations:
     aliases:
       - 示例供应商
       - 供应商甲
+    # Optional; normally written by `catalog import-seal`, not by hand.
+    # seal:
+    #   path: ../assets/seals/supplier_example_co.png
     contacts:
       - id: default
         label: 默认联系人

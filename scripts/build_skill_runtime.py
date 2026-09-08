@@ -14,7 +14,7 @@ The runtime is executed as a PEP 723 script (`run.py`, resolved via
 and no editable install of a `docflow` package: `run.py` puts this
 runtime's own `src/` on `sys.path` and calls `docflow.cli.main()`
 directly, so `uv` only ever needs to resolve run.py's own declared
-dependencies (openpyxl, PyYAML), never build or install anything of ours.
+dependencies (openpyxl, Pillow, PyYAML), never build or install anything of ours.
 
 Usage:
     python3 scripts/build_skill_runtime.py
@@ -57,6 +57,7 @@ _RUN_PY = '''\
 # requires-python = ">=3.11"
 # dependencies = [
 #   "openpyxl>=3.1",
+#   "Pillow>=10.0",
 #   "PyYAML>=6.0",
 # ]
 # ///

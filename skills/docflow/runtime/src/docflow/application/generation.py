@@ -24,6 +24,8 @@ from docflow.adapters.batch_input import (
     fact_pack_from_record,
     load_batch_records,
 )
+from docflow.catalog.loader import CatalogError, load_catalog, normalize
+from docflow.catalog.models import Catalog
 from docflow.domain.document import DocumentProjection, DocumentType, build_projection
 from docflow.domain.validation import (
     ValidationResult,
@@ -56,6 +58,7 @@ class ManifestEntry:
     validation_status: str
     issues: tuple[str, ...]
     source_snapshot_hash: str
+    enhancements: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -95,6 +98,7 @@ def generate_batch(
     delivery_template_path: Path,
     output_dir: Path,
     registry: TemplateRegistry | None = None,
+    catalog_root: Path | None = None,
 ) -> BatchSummary:
     registry = registry or TemplateRegistry()
     template_paths = {
@@ -108,6 +112,13 @@ def generate_batch(
     # never disguised as a per-record FAILED entry.
     _preflight_templates(registry, template_paths)
     raw_records = load_batch_records(batch_file)
+    catalog: Catalog | None = None
+    catalog_note: str | None = None
+    if catalog_root is not None:
+        try:
+            catalog = load_catalog(catalog_root)
+        except CatalogError as exc:
+            catalog_note = f"IMAGE_SKIPPED seller_seal: catalog unavailable ({exc.code})"
 
     entries: list[ManifestEntry] = []
 
@@ -135,6 +146,7 @@ def generate_batch(
 
         contract_projection = build_projection(fact_pack, DocumentType.PROCUREMENT_CONTRACT_V1)
         delivery_projection = build_projection(fact_pack, DocumentType.DELIVERY_NOTE_V1)
+        image_assets, image_notes = _resolve_image_assets(catalog, catalog_root, fact_pack.seller, catalog_note)
 
         contract_issues = _issue_strings(validate_derived_consistency(contract_projection))
         delivery_issues = _issue_strings(validate_derived_consistency(delivery_projection))
@@ -147,14 +159,14 @@ def generate_batch(
             _render_or_fail(
                 registry, template_paths, output_dir,
                 DocumentType.PROCUREMENT_CONTRACT_V1, contract_projection,
-                contract_issues, snapshot_hash,
+                contract_issues, snapshot_hash, image_assets, image_notes,
             )
         )
         entries.append(
             _render_or_fail(
                 registry, template_paths, output_dir,
                 DocumentType.DELIVERY_NOTE_V1, delivery_projection,
-                delivery_issues, snapshot_hash,
+                delivery_issues, snapshot_hash, image_assets, image_notes,
             )
         )
 
@@ -167,6 +179,35 @@ def generate_batch(
         failed_documents=len(entries) - passed,
         entries=tuple(entries),
     )
+
+
+def _resolve_image_assets(
+    catalog: Catalog | None,
+    catalog_root: Path | None,
+    seller: str,
+    catalog_note: str | None,
+) -> tuple[dict[str, Path], tuple[str, ...]]:
+    if catalog_note:
+        return {}, (catalog_note,)
+    if catalog is None or catalog_root is None:
+        return {}, ()
+    query = normalize(seller)
+    matches = [
+        org for org in catalog.organizations.values()
+        if "supplier" in org.roles
+        and query in {normalize(org.id), normalize(org.name), *(normalize(alias) for alias in org.aliases)}
+    ]
+    if len(matches) != 1:
+        reason = "not found" if not matches else "ambiguous"
+        return {}, (f"IMAGE_SKIPPED seller_seal: supplier organization {reason}",)
+    org = matches[0]
+    if org.seal is None:
+        return {}, (f"IMAGE_SKIPPED seller_seal: organization {org.id!r} has no seal",)
+    candidate = Path(org.seal.path)
+    seal_path = candidate if candidate.is_absolute() else (catalog_root / candidate).resolve()
+    if not seal_path.is_file():
+        return {}, (f"IMAGE_SKIPPED seller_seal: asset missing for organization {org.id!r}",)
+    return {"seller_seal": seal_path}, ()
 
 
 def _failed_entries(business_reference: str, issues: list[str], snapshot_hash: str) -> list[ManifestEntry]:
@@ -193,6 +234,8 @@ def _render_or_fail(
     projection: DocumentProjection,
     issues: list[str],
     snapshot_hash: str,
+    image_assets: dict[str, Path],
+    image_notes: tuple[str, ...],
 ) -> ManifestEntry:
     definition = registry.get(document_type)
 
@@ -212,7 +255,10 @@ def _render_or_fail(
     output_path = output_dir / relative_output
 
     try:
-        render(definition, template_paths[document_type], projection, output_path)
+        render_notes = render(
+            definition, template_paths[document_type], projection, output_path,
+            image_assets=image_assets,
+        )
     except TemplateRenderError as exc:
         return ManifestEntry(
             business_reference=projection.business_reference,
@@ -234,12 +280,16 @@ def _render_or_fail(
         validation_status=PASS,
         issues=(),
         source_snapshot_hash=snapshot_hash,
+        enhancements=tuple(dict.fromkeys((
+            *image_notes,
+            *(note for note in render_notes if not image_notes or "asset not configured" not in note),
+        ))),
     )
 
 
 def _write_manifest(output_dir: Path, entries: list[ManifestEntry]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     manifest_path = output_dir / "manifest.json"
-    payload = [dict(asdict(e), issues=list(e.issues)) for e in entries]
+    payload = [dict(asdict(e), issues=list(e.issues), enhancements=list(e.enhancements)) for e in entries]
     with manifest_path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)

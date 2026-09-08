@@ -27,10 +27,16 @@ generated file is opened.
 """
 from __future__ import annotations
 
+import copy
 from pathlib import Path
 
 import openpyxl
+from openpyxl.drawing.image import Image
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
+from openpyxl.utils import column_index_from_string
 from openpyxl.utils.cell import coordinate_to_tuple
+from openpyxl.utils.units import pixels_to_EMU
 from openpyxl.workbook.properties import CalcProperties
 
 from docflow.domain.document import DocumentProjection, chinese_date, chinese_month_day
@@ -207,12 +213,84 @@ def _item_cell_value(item: LineItemAmounts, index: int, field_name: str):
     return value
 
 
+def _snapshot_print_settings(ws) -> dict:
+    """Capture every openpyxl-exposed print setting before cell/image edits."""
+    return {
+        "page_setup": copy.copy(ws.page_setup),
+        "page_margins": copy.copy(ws.page_margins),
+        "print_options": copy.copy(ws.print_options),
+        "page_setup_properties": copy.copy(ws.sheet_properties.pageSetUpPr),
+        "print_area": ws.print_area,
+        "print_title_rows": ws.print_title_rows,
+        "print_title_cols": ws.print_title_cols,
+        "row_breaks": copy.deepcopy(ws.row_breaks),
+        "col_breaks": copy.deepcopy(ws.col_breaks),
+        "odd_header": copy.copy(ws.oddHeader),
+        "odd_footer": copy.copy(ws.oddFooter),
+        "even_header": copy.copy(ws.evenHeader),
+        "even_footer": copy.copy(ws.evenFooter),
+        "first_header": copy.copy(ws.firstHeader),
+        "first_footer": copy.copy(ws.firstFooter),
+    }
+
+
+def _restore_print_settings(ws, settings: dict) -> None:
+    ws.page_setup = settings["page_setup"]
+    ws.page_margins = settings["page_margins"]
+    ws.print_options = settings["print_options"]
+    ws.sheet_properties.pageSetUpPr = settings["page_setup_properties"]
+    ws.print_area = settings["print_area"]
+    ws.print_title_rows = settings["print_title_rows"]
+    ws.print_title_cols = settings["print_title_cols"]
+    ws.row_breaks = settings["row_breaks"]
+    ws.col_breaks = settings["col_breaks"]
+    ws.oddHeader = settings["odd_header"]
+    ws.oddFooter = settings["odd_footer"]
+    ws.evenHeader = settings["even_header"]
+    ws.evenFooter = settings["even_footer"]
+    ws.firstHeader = settings["first_header"]
+    ws.firstFooter = settings["first_footer"]
+
+
+def _insert_images(ws, definition: TemplateDefinition, image_assets: dict[str, Path]) -> tuple[str, ...]:
+    enhancements: list[str] = []
+    for image_id, mapping in definition.images.items():
+        asset_path = image_assets.get(image_id)
+        if asset_path is None:
+            enhancements.append(f"IMAGE_SKIPPED {image_id}: asset not configured")
+            continue
+        try:
+            image = Image(asset_path)
+            column_letters, row = openpyxl.utils.cell.coordinate_from_string(mapping.anchor)
+            marker = AnchorMarker(
+                col=column_index_from_string(column_letters) - 1,
+                row=row - 1,
+                colOff=pixels_to_EMU(mapping.x_offset_px),
+                rowOff=pixels_to_EMU(mapping.y_offset_px),
+            )
+            image.anchor = OneCellAnchor(
+                _from=marker,
+                ext=XDRPositiveSize2D(
+                    cx=int(mapping.width_mm * 36_000),
+                    cy=int(mapping.height_mm * 36_000),
+                ),
+            )
+            ws.add_image(image)
+            enhancements.append(f"IMAGE_INSERTED {image_id}")
+        except Exception as exc:
+            # Images are a delivery enhancement. A stale/malformed asset
+            # must never turn an otherwise valid business document into FAIL.
+            enhancements.append(f"IMAGE_SKIPPED {image_id}: {exc}")
+    return tuple(enhancements)
+
+
 def render(
     definition: TemplateDefinition,
     source_template_path: Path,
     projection: DocumentProjection,
     output_path: Path,
-) -> None:
+    image_assets: dict[str, Path] | None = None,
+) -> tuple[str, ...]:
     capacity = definition.items.capacity
     if len(projection.items) > capacity:
         raise TemplateRenderError(
@@ -223,6 +301,7 @@ def render(
 
     wb = openpyxl.load_workbook(source_template_path)
     ws = wb[definition.sheet]
+    print_settings = _snapshot_print_settings(ws)
 
     context = _cell_text_context(projection)
     for cell_address, template_str in definition.header.items():
@@ -241,6 +320,11 @@ def render(
         for column_letter in columns.values():
             ws[f"{column_letter}{row}"] = None
 
+    enhancements = _insert_images(ws, definition, image_assets or {})
+    # Reapply the source template's settings after all mutations. This is
+    # intentionally a copy, not a guessed A4 configuration.
+    _restore_print_settings(ws, print_settings)
+
     if wb.calculation is None:
         wb.calculation = CalcProperties(fullCalcOnLoad=True)
     else:
@@ -248,3 +332,4 @@ def render(
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     wb.save(output_path)
+    return enhancements

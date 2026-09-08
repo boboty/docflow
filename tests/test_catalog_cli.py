@@ -244,3 +244,21 @@ def test_import_template_cli_rejects_existing_without_replace(tmp_path, capsys):
 
     exit_code = main([*args, "--replace"])
     assert exit_code == 0
+
+
+def test_import_seal_cli_end_to_end(tmp_path, capsys):
+    from PIL import Image
+
+    catalog_root = _seed(tmp_path / "catalog")
+    source = tmp_path / "seal.png"
+    Image.new("RGBA", (32, 32), (200, 0, 0, 180)).save(source, "PNG")
+
+    exit_code = main([
+        "catalog", "import-seal", "--catalog-root", str(catalog_root),
+        "--organization", "acme", "--source", str(source),
+    ])
+    assert exit_code == 0, capsys.readouterr()
+    managed = catalog_root.parent / "assets" / "seals" / "acme.png"
+    assert managed.is_file()
+    organizations = (catalog_root / "organizations.yaml").read_text(encoding="utf-8")
+    assert "../assets/seals/acme.png" in organizations

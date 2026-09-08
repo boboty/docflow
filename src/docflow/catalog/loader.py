@@ -21,7 +21,7 @@ from typing import Any
 
 import yaml
 
-from docflow.catalog.models import Address, Catalog, Contact, Organization, Product, TemplateEntry
+from docflow.catalog.models import Address, Catalog, Contact, Organization, Product, Seal, TemplateEntry
 
 _WHITESPACE_RE = re.compile(r"\s+")
 
@@ -136,6 +136,11 @@ def _parse_organization(org_id: str, raw: Any) -> Organization:
     if len(default_addresses) > 1:
         raise CatalogError("INVALID_CATALOG", f"{where}: multiple default addresses ({[a.id for a in default_addresses]})")
 
+    seal_raw = raw.get("seal")
+    if seal_raw is not None and not isinstance(seal_raw, dict):
+        raise CatalogError("INVALID_CATALOG", f"{where}: 'seal' must be a mapping")
+    seal = Seal(path=_require_str(seal_raw, "path", f"{where}.seal")) if seal_raw is not None else None
+
     return Organization(
         id=org_id,
         name=_require_str(raw, "name", where),
@@ -143,6 +148,7 @@ def _parse_organization(org_id: str, raw: Any) -> Organization:
         aliases=_str_list(raw, "aliases", where),
         contacts=contacts,
         addresses=addresses,
+        seal=seal,
     )
 
 

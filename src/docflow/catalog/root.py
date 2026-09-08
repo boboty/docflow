@@ -35,3 +35,8 @@ def managed_template_root(catalog_root: Path) -> Path:
     ($PWD/.docflow/catalog) this is $PWD/.docflow/templates.
     """
     return catalog_root.parent / "templates"
+
+
+def managed_seal_root(catalog_root: Path) -> Path:
+    """Workspace-managed organization seal assets."""
+    return catalog_root.parent / "assets" / "seals"
