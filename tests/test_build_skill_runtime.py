@@ -43,9 +43,24 @@ def test_sync_script_reproduces_source_exactly():
         assert dest_files[relative_path] == content, f"{relative_path} differs between src/docflow and bundled runtime"
 
 
-def test_runtime_pyproject_and_version_files_exist_after_sync():
+def test_runtime_is_a_pep723_script_with_no_setuptools_project(tmp_path: Path):
     runtime_dir = DEST_PACKAGE.parent.parent
-    assert (runtime_dir / "pyproject.toml").exists()
+
+    run_py = runtime_dir / "run.py"
+    assert run_py.exists()
+    run_py_text = run_py.read_text(encoding="utf-8")
+    assert "# /// script" in run_py_text
+    assert "openpyxl" in run_py_text
+    assert "PyYAML" in run_py_text
+
+    assert (runtime_dir / "run.py.lock").exists()
+
+    # No setuptools/editable-install project - PEP 723 resolves run.py's
+    # own declared deps only, it never builds or installs a `docflow`
+    # package.
+    assert not (runtime_dir / "pyproject.toml").exists()
+    assert not (runtime_dir / "uv.lock").exists()
+
     version_file = runtime_dir / "VERSION"
     assert version_file.exists()
     assert "source_commit" in version_file.read_text(encoding="utf-8")

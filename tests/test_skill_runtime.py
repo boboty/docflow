@@ -84,6 +84,30 @@ def test_launcher_passes_through_help(tmp_path):
     assert "usage: docflow" in result.stdout
 
 
+# No setuptools/editable-install step: PEP 723 (`uv run --script`) only
+# ever resolves run.py's own declared deps (openpyxl, PyYAML) - it must
+# never build or install a `docflow` package.
+def test_launcher_never_builds_or_installs_a_docflow_package(tmp_path):
+    result = _run(["--help"], cwd=tmp_path)
+    assert result.returncode == 0
+    combined = result.stdout + result.stderr
+    for phrase in ("Building docflow", "Built docflow", "editable"):
+        assert phrase not in combined, combined
+
+
+def test_uv_no_sync_in_environment_is_inert(tmp_path):
+    """A stale UV_NO_SYNC=1 some environments set for the old
+    `uv run --project` mechanism must not change anything now - PEP 723
+    script mode has no project-sync step for it to affect, and the
+    launcher unsets it defensively regardless.
+    """
+    env = os.environ.copy()
+    env["UV_NO_SYNC"] = "1"
+    result = _run(["catalog", "init"], cwd=tmp_path, env=env)
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".docflow" / "catalog" / "organizations.yaml").exists()
+
+
 # 5. launcher passes through DocFlow's own exit code unmodified
 def test_launcher_passes_through_exit_code(tmp_path):
     batch = tmp_path / "batch.json"
@@ -203,11 +227,43 @@ def test_isolated_skill_copy_works_with_zero_repo_dependency(tmp_path):
     assert json.loads(result.stdout)["status"] == "RESOLVED"
 
 
+# True cold start: an isolated skill copy, run with an EMPTY uv cache and
+# no pre-existing environment for this script - the exact scenario a
+# brand-new WorkBuddy machine (or one that just installed uv) is in.
+def test_cold_start_with_empty_uv_cache_and_no_existing_environment(tmp_path):
+    isolated_skill = tmp_path / "cold-skill"
+    shutil.copytree(SKILL_DIR, isolated_skill)
+    isolated_launcher = isolated_skill / "scripts" / "docflow"
+
+    uv_dir = str(Path(_UV_ON_PATH).parent) if _UV_ON_PATH else str(_UV_AT_HOME.parent)
+    fake_home = tmp_path / "fake-home"
+    fake_home.mkdir()
+    cold_cache = tmp_path / "empty-uv-cache"
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    env = {
+        "HOME": str(fake_home),
+        "PATH": f"{uv_dir}:/usr/bin:/bin",
+        "UV_CACHE_DIR": str(cold_cache),
+    }
+
+    assert not cold_cache.exists()
+    result = _run(["--help"], cwd=workspace, env=env, launcher=isolated_launcher, timeout=300)
+    assert result.returncode == 0, result.stderr
+    assert cold_cache.exists()  # uv genuinely had to populate a fresh cache here
+
+    result = _run(["catalog", "init"], cwd=workspace, env=env, launcher=isolated_launcher, timeout=300)
+    assert result.returncode == 0, result.stderr
+    assert (workspace / ".docflow" / "catalog" / "organizations.yaml").exists()
+
+
 # 16. no hardcoded reference to this developer's machine/repo path
 def test_no_hardcoded_repo_path_in_launcher_or_runtime_source():
     forbidden = str(REPO_ROOT)
     launcher_text = LAUNCHER.read_text(encoding="utf-8")
     assert forbidden not in launcher_text
+    assert forbidden not in (SKILL_DIR / "runtime" / "run.py").read_text(encoding="utf-8")
 
     for py_file in (SKILL_DIR / "runtime" / "src").rglob("*.py"):
         assert forbidden not in py_file.read_text(encoding="utf-8"), py_file
@@ -229,3 +285,11 @@ def test_skill_doc_no_longer_requires_global_docflow_install():
 
     assert "bundled" in text.lower()
     assert "$DOCFLOW" in text
+
+
+# SKILL.md must state the Skill's own files are not to be touched during
+# a task (only the workspace - .docflow/catalog, business input, output -
+# changes as a result of using this skill).
+def test_skill_doc_states_installed_skill_is_immutable():
+    text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "immutable during task execution" in text

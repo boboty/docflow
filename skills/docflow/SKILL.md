@@ -51,15 +51,34 @@ Every example below assumes `DOCFLOW` is set that way; wherever you see
 - tell the user "DocFlow isn't installed" or ask them where its source
   code lives - it already shipped with this Skill.
 
-The only thing `$DOCFLOW` itself needs at runtime is `uv` (for its
-isolated, bundled Python environment - dependencies come from the
-Skill's own `runtime/pyproject.toml`, nothing global). If a command fails
-with `DOCFLOW_RUNTIME_UNAVAILABLE`, that means either this Skill's
+The only thing `$DOCFLOW` itself needs at runtime is `uv`. `runtime/run.py`
+is a [PEP 723](https://peps.python.org/pep-0723/) script - its own inline
+metadata declares its dependencies (openpyxl, PyYAML), and `uv run`
+resolves *only those* into an isolated, uv-managed environment. There is
+no `pyproject.toml`, no setuptools build, and no install (editable or
+otherwise) of a `docflow` package - `run.py` puts this runtime's own
+bundled `src/` on `sys.path` and calls straight into it. If a command
+fails with `DOCFLOW_RUNTIME_UNAVAILABLE`, that means either this Skill's
 `runtime/` is missing/corrupted, or `uv` itself isn't installed on this
 machine (not in `PATH`, not at `$HOME/.local/bin/uv`) - report that
 specific, structured problem; do not fall back to a system Python or a
 global `docflow`, and do not tell the user to install DocFlow (the
-problem is `uv`, not DocFlow).
+problem is `uv`, not DocFlow). Don't set `UV_NO_SYNC` or any other uv
+environment-variable workaround to "fix" a launcher problem - PEP 723
+script mode has no project-sync step for that variable to affect, and if
+`$DOCFLOW` is actually failing, the fix is to report
+`DOCFLOW_RUNTIME_UNAVAILABLE` accurately, not to paper over it with an
+env var.
+
+**The installed Skill is immutable during task execution.** Never write,
+edit, move, or delete anything under this Skill's own directory
+(`SKILL.md`, `scripts/`, `runtime/`, `examples/`) while carrying out a
+task - not the runtime's source, not its lockfile, not this document.
+The only place state changes as a result of using this skill is the
+current workspace: `.docflow/catalog/`, the user's business input, and
+`output/`. If something about the Skill itself seems wrong (missing
+runtime, corrupted files), report it - don't try to patch, regenerate, or
+"fix" the Skill's own files yourself.
 
 ## STOP CONDITIONS - read this before anything else
 

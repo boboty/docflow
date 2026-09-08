@@ -3,23 +3,35 @@
 #
 # Thin wrapper ONLY - no business logic lives here. It:
 #   1. locates this Skill's own root (wherever it was copied to);
-#   2. locates the bundled runtime (skills/docflow/runtime/);
+#   2. locates the bundled runtime's PEP 723 entry script (runtime/run.py);
 #   3. finds `uv` deterministically - PATH, then $HOME/.local/bin/uv,
 #      never a broader filesystem search;
-#   4. execs the bundled DocFlow CLI through `uv run --project`, passing
-#      every argument through unchanged;
+#   4. execs run.py through `uv run`, passing every argument through
+#      unchanged;
 #   5. returns DocFlow's own exit code (via `exec`, not a wrapped call).
+#
+# run.py is a PEP 723 script: `uv run` resolves only ITS declared
+# dependencies (openpyxl, PyYAML) into an isolated, uv-cache-managed
+# environment. There is no pyproject.toml here and no `docflow` package
+# install (editable or otherwise) - run.py puts the bundled src/ on
+# sys.path itself. This also means no `--project` / uv "sync" semantics
+# are involved, so a `UV_NO_SYNC=1` workaround some environments used
+# with the old `uv run --project` mechanism no longer applies - it is
+# explicitly unset below so a stale copy of it in the calling shell can't
+# change this launcher's behavior.
 #
 # No fallback to a system/global `docflow`, system Python, or pip/uv tool
 # install - if the bundled runtime or uv is unavailable, this reports a
 # structured error and stops.
 set -euo pipefail
+unset UV_NO_SYNC
 
 SCRIPT_DIR="$(cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")" &>/dev/null && pwd)"
 SKILL_ROOT="$(cd -P -- "$SCRIPT_DIR/.." &>/dev/null && pwd)"
 RUNTIME_DIR="$SKILL_ROOT/runtime"
+RUN_PY="$RUNTIME_DIR/run.py"
 
-if [ ! -d "$RUNTIME_DIR/src/docflow" ]; then
+if [ ! -f "$RUN_PY" ] || [ ! -d "$RUNTIME_DIR/src/docflow" ]; then
   echo "DOCFLOW_RUNTIME_UNAVAILABLE:" >&2
   echo "bundled runtime not found at $RUNTIME_DIR" >&2
   echo "This Skill installation appears incomplete or corrupted - reinstall the Skill." >&2
@@ -41,4 +53,4 @@ if [ -z "$UV_BIN" ]; then
   exit 127
 fi
 
-exec "$UV_BIN" run --project "$RUNTIME_DIR" python -m docflow.cli "$@"
+exec "$UV_BIN" run --script "$RUN_PY" "$@"

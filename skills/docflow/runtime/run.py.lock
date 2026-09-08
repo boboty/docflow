@@ -2,17 +2,8 @@ version = 1
 revision = 3
 requires-python = ">=3.11"
 
-[[package]]
-name = "docflow"
-version = "0.1.0"
-source = { editable = "." }
-dependencies = [
-    { name = "openpyxl" },
-    { name = "pyyaml" },
-]
-
-[package.metadata]
-requires-dist = [
+[manifest]
+requirements = [
     { name = "openpyxl", specifier = ">=3.1" },
     { name = "pyyaml", specifier = ">=6.0" },
 ]
