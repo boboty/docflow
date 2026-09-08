@@ -1,0 +1,22 @@
+[project]
+name = "docflow"
+version = "0.1.0"
+description = "DocFlow deterministic runtime, bundled with the docflow Skill."
+requires-python = ">=3.11"
+dependencies = [
+    "openpyxl>=3.1",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+docflow = "docflow.cli:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"docflow.templates" = ["mappings/*.yaml"]

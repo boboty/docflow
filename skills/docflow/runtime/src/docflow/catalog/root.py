@@ -1,0 +1,27 @@
+"""Single source of truth for resolving the Catalog root.
+
+Priority: explicit --catalog-root > DOCFLOW_CATALOG_ROOT >
+$PWD/.docflow/catalog. Every `docflow catalog *` subcommand must call this
+one function - never re-implement the priority order locally.
+
+`$PWD/.docflow/catalog` is a fixed, documented, workspace-local
+convention - not filesystem search. This function never walks up to a
+parent directory and never looks in `$HOME`; switching `$PWD` (i.e. the
+agent's working directory) switches to a completely different, isolated
+catalog.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+WORKSPACE_CATALOG_SUBPATH = Path(".docflow") / "catalog"
+
+
+def resolve_catalog_root(explicit: Path | None = None, cwd: Path | None = None) -> Path:
+    if explicit is not None:
+        return explicit
+    env = os.environ.get("DOCFLOW_CATALOG_ROOT")
+    if env:
+        return Path(env)
+    return (cwd if cwd is not None else Path.cwd()) / WORKSPACE_CATALOG_SUBPATH

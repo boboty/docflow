@@ -1,19 +1,109 @@
 ---
 name: docflow
-description: Generate real 采购合同 (procurement contract) and 送货单 (delivery note) .xlsx documents from structured, gross-pricing business facts via the docflow CLI. Use when the user asks to generate a procurement contract, a delivery note, both together, or a batch of formal documents from procurement business data.
+description: Generate real 采购合同 (procurement contract) and 送货单 (delivery note) .xlsx documents from structured, gross-pricing business facts via the docflow CLI, resolving stable supplier/ship-to/product/template facts from a Reference Catalog. Use when the user asks to generate a procurement contract, a delivery note, both together, or a batch of formal documents from procurement business data.
 ---
 
 # DocFlow Skill
 
 DocFlow turns structured business facts into real, formatted 采购合同 and
-送货单 `.xlsx` files by calling the existing `docflow` CLI. This skill is a
-thin operating procedure for that CLI - it does not reimplement, extend,
-or second-guess any business rule. All money/tax/rounding logic lives in
-the DocFlow engine; this skill never computes it itself.
+送货单 `.xlsx` files by calling the DocFlow CLI **bundled with this
+Skill**, using a small Reference Catalog to fill in supplier/ship-to/
+product/template facts that don't change transaction to transaction. This
+skill is an operating procedure for those two things - it does not
+reimplement, extend, or second-guess any business rule, and it does not
+go looking for data (or for an install of DocFlow) on its own.
 
 ```text
-User → Agent → this Skill → docflow CLI → manifest.json → Agent's response
+User's current-task facts + Reference Catalog
+        → Agent (this skill)
+        → DocumentFactPack
+        → bundled DocFlow runtime (this Skill's own scripts/docflow)
+        → manifest.json
+        → Agent's response
 ```
+
+## The bundled runtime - always use it, never install anything
+
+**Installing this Skill already installed DocFlow.** There is a complete,
+self-contained, executable DocFlow runtime shipped inside the Skill's own
+`runtime/` directory - it is not a separate thing you or the user need to
+set up.
+
+Every command in this document runs through this Skill's own launcher,
+never a global `docflow`, never a bare `python -m docflow.cli`, never
+`pip install`/`uv tool install`. Concretely:
+
+```text
+SKILL_ROOT  = the directory this SKILL.md file lives in
+              (use your platform's standard way to reference a skill's own
+              directory if it has one; otherwise it's simply the parent
+              directory of this file)
+DOCFLOW     = "$SKILL_ROOT/scripts/docflow"
+```
+
+Every example below assumes `DOCFLOW` is set that way; wherever you see
+`$DOCFLOW`, substitute your platform's actual path to this Skill's
+`scripts/docflow`. Do not:
+
+- run `command -v docflow` or otherwise look for a global install;
+- run `python -m docflow.cli` directly, or invoke any Python module path;
+- ask the user to `pip install`, `uv tool install`, or clone a source repo;
+- tell the user "DocFlow isn't installed" or ask them where its source
+  code lives - it already shipped with this Skill.
+
+The only thing `$DOCFLOW` itself needs at runtime is `uv` (for its
+isolated, bundled Python environment - dependencies come from the
+Skill's own `runtime/pyproject.toml`, nothing global). If a command fails
+with `DOCFLOW_RUNTIME_UNAVAILABLE`, that means either this Skill's
+`runtime/` is missing/corrupted, or `uv` itself isn't installed on this
+machine (not in `PATH`, not at `$HOME/.local/bin/uv`) - report that
+specific, structured problem; do not fall back to a system Python or a
+global `docflow`, and do not tell the user to install DocFlow (the
+problem is `uv`, not DocFlow).
+
+## STOP CONDITIONS - read this before anything else
+
+An earlier run of this skill went wrong exactly here: the user said "I
+have a batch of procurement data, generate the documents" without
+providing the data or a template path, and the agent found
+`local/golden_batch.local.json` in the repository, treated it as this
+task's business data, searched iCloud for a template, guessed one by
+filename, and ran DocFlow. Every one of those steps was wrong. The three
+rules below exist specifically to prevent that class of mistake, and they
+override everything else in this document.
+
+**Rule 1 - no data, no run.** If the user has not provided or explicitly
+named this task's business data in the current conversation, do not run
+DocFlow. It does not matter what else is sitting in the workspace -
+`golden_batch.local.json`, `sample.json`, a `local/`, `tests/`,
+`examples/`, or `output/` directory, a previous task's files. **A file
+being accessible or discoverable does not make it an authorized source
+for the current task.** Only data the user uploaded or explicitly pointed
+to in *this* task counts. If it's missing, ask for it or tell the user
+you need it - do not substitute anything you happen to find. (Resolving
+or bootstrapping the *Catalog* itself - `docflow catalog init`/`resolve`
+against `$PWD/.docflow/catalog` - is not "running DocFlow" and doesn't
+touch business data; that's fine to do freely, per the next section.)
+
+**Rule 2 - no filesystem discovery.** Never use `find`, `locate`, a
+broad/recursive search, an iCloud or Documents scan, or "guess the
+filename from the contract/delivery number" to locate business data or a
+template. The one sanctioned, fixed location you don't need permission to
+use is the current workspace's own Catalog at `$PWD/.docflow/catalog`
+(see "The Catalog root" below) - that is a documented convention, not a
+search. Everything else - the business data itself, and template paths
+not already registered in the Catalog - comes only from an explicit
+user-given path or value. If the user explicitly asks you to *find* a
+file ("look for the contract template on my machine"), you may search -
+but finding it does not make it authorized for use. Report what you found
+and ask before treating it as this task's input.
+
+**Rule 3 - Catalog `NOT_FOUND` means unknown, not "search harder".** If
+`docflow catalog resolve` returns `NOT_FOUND`, that name is genuinely not
+in the Catalog. Do not widen the search, check other directories, or
+infer an answer from context. Tell the user it's not registered and ask
+them to provide it (optionally offering to save it to the Catalog once
+they confirm - see "Accumulating the Catalog" below).
 
 ## When to use this skill
 
@@ -24,9 +114,10 @@ Use it when the user asks to:
 - generate both from the same business facts;
 - produce formal documents for a batch of procurement business.
 
-...**and** the business facts available satisfy DocFlow's Phase 0 gross-pricing
-input contract (see "Input contract" below). If they don't, say so - see
-"What this skill must never do" and Scenario D.
+...**and** the user has actually supplied this task's business data (Rule
+1), and that data satisfies DocFlow's Phase 0 gross-pricing input contract
+(see "Input contract" below and "What this skill must never do"). If
+either condition fails, say so instead of proceeding.
 
 ## What DocFlow is not
 
@@ -35,16 +126,20 @@ Do not present DocFlow as, or reach for it as:
 - a general-purpose Excel editor or document generator;
 - a generic contract-drafting tool for arbitrary contract types;
 - an OCR or document-extraction tool;
-- a template-management or template-design system.
+- a template-management or template-design system;
+- a customer/supplier master-data system (that's the Reference Catalog's
+  narrow job below, and even the Catalog is not an ERP or System of
+  Record - it only holds long-lived, reusable facts).
 
-It does exactly one thing: project a `DocumentFactPack` you already have
-into two specific, pre-existing real Excel templates.
+It does exactly one thing: project a `DocumentFactPack` into two specific,
+pre-existing real Excel templates.
 
 ## What this skill must never do
 
-**This is the most important rule.** You may read, organize, map field
-names, invoke the CLI, and explain results. You must never compute or
-guess an authoritative business amount yourself.
+**This is the most important rule for the business data itself.** You may
+read, organize, map field names, resolve names against the Catalog,
+invoke the CLI, and explain results. You must never compute or guess an
+authoritative business amount yourself.
 
 Specifically:
 
@@ -56,20 +151,193 @@ Specifically:
   not yours.
 - Never derive `gross_amount` or `gross_unit_price` from a tax-exclusive
   `net_unit_price`. If the data you have is net-of-tax only, you are
-  missing DocFlow's required facts - see Scenario D.
+  missing DocFlow's required facts - tell the user, don't convert.
 - Never reimplement tax math, rounding, RMB capitalization, or amount
   totals in your own reasoning to "double check" or "fill in" a number.
   If a number is missing, ask for it or say it's missing. Don't invent it.
-- If the source data only gives you a tax-exclusive unit price and no
-  gross/含税 figures, tell the user DocFlow Phase 0 needs the authoritative
-  gross fact - do not silently convert or approximate one.
+- The Reference Catalog never supplies a price, quantity, tax rate, or any
+  other transaction fact (see "Catalog facts vs. current-task facts"
+  below) - not even "the last order's price for this SKU". If it's not in
+  the Catalog schema, it doesn't come from the Catalog, ever.
 
 Why: DocFlow's entire value is that money math is centralized and
-deterministic in one engine. An agent inventing or "helpfully" precomputing
-a number defeats that, and worse, could pass validation while producing a
-document with a silently wrong amount. When engine rules change in the
-future (rounding policy, tolerance, capitalization), nothing in this file
-should need to change, because none of those rules are duplicated here.
+deterministic in one engine, and Catalog data is centralized as *stable*
+facts only. An agent inventing a number, or promoting a historical price
+into a current fact, defeats both of those and could pass validation
+while producing a document with a silently wrong amount.
+
+## Catalog facts vs. current-task facts
+
+The Reference Catalog exists so you don't have to ask for a supplier's
+full legal name, address, and contact every single time. It is not a
+place to look for *this transaction's* numbers.
+
+**Catalog may supply** (stable, reusable, looked up by name/alias):
+
+```text
+organization formal name, aliases, roles
+organization contacts (name, phone) and addresses
+product name, specification, unit, aliases
+template file paths
+```
+
+**Catalog must never supply** (this transaction's facts - only from data
+the user gave you in the current task):
+
+```text
+contract_no, delivery_no, contract_date, delivery_date
+quantity, gross_unit_price, gross_amount, tax_rate, remarks
+business_reference, gross_total
+```
+
+If the current task's data is missing one of these, that is a gap in
+*this task's input*, not something to fill from the Catalog, from a past
+order, or from any file under `local/`, `tests/`, `examples/`, `golden/`,
+`acceptance/`, a previous `output/`, or any other historical source.
+
+## The Catalog root, and why you don't need to configure it
+
+Every `docflow catalog *` subcommand resolves its root the same way,
+automatically:
+
+```text
+explicit --catalog-root  >  DOCFLOW_CATALOG_ROOT  >  $PWD/.docflow/catalog
+```
+
+For ordinary use you do nothing: the Catalog lives at
+`<current workspace>/.docflow/catalog` - `$PWD` being the agent's current
+working directory - and the CLI finds it there without any environment
+variable or manual setup. `$PWD/.docflow/catalog` is a fixed, documented
+convention, not filesystem search (Rule 2 is about *not* going hunting
+for a Catalog in other locations - this default location is the one
+sanctioned place to look, always relative to the current workspace, never
+a parent directory or `$HOME`).
+
+**First use in a workspace:** if `docflow catalog validate` or `resolve`
+turns up nothing (an empty/not-yet-existing catalog), run
+`docflow catalog init` before anything else:
+
+```bash
+"$DOCFLOW" catalog init            # creates $PWD/.docflow/catalog if missing
+"$DOCFLOW" catalog validate        # confirm it's usable
+"$DOCFLOW" catalog resolve ...     # now resolve as normal
+```
+
+`init` is idempotent and safe to run every time you're not sure a
+workspace has been initialized yet: it only ever *creates a missing
+file* (as an empty `{}` section) and never touches a file that already
+exists - so it can never overwrite real Catalog data, even partially. If
+an existing file is malformed, `init` reports `INVALID_CATALOG` and exits
+`2` rather than rewriting it to force success; treat that exactly like
+any other invalid-catalog error (a configuration problem, not something
+to "fix" by regenerating the file yourself).
+
+Advanced/explicit overrides (`--catalog-root`, `DOCFLOW_CATALOG_ROOT`)
+still work exactly as before, e.g. if the user wants to point at a
+Catalog shared across multiple workspaces.
+
+**Workspace isolation.** A different `$PWD` means a completely different
+Catalog - `/work/client-a/.docflow/catalog` and
+`/work/client-b/.docflow/catalog` never see each other's data, and
+neither is found by walking up from a subdirectory. If you `cd` between
+tasks for different clients/workspaces, each one bootstraps and
+accumulates its own Catalog independently; don't try to "share" one by
+copying files around unless the user explicitly asks for that.
+
+**Git.** If the current workspace happens to be a git repository,
+`.docflow/catalog` can contain real business data once populated. Never
+`git add` or commit it yourself, and don't modify the workspace's
+`.gitignore` to "protect" it unless the user explicitly asks you to -
+that's a decision for the user to make about their own repository, not
+something this skill does on their behalf.
+
+Real Catalog data (`organizations.yaml`, `products.yaml`,
+`templates.yaml`) is never committed to *this* (DocFlow's own)
+repository. `skills/docflow/examples/catalog/*.example.yaml` is a
+synthetic reference for the schema only - it is not a real catalog and is
+never used as one.
+
+## Resolving names against the Catalog
+
+Resolve every supplier/ship-to/freight-forwarder/product/template
+reference through the CLI - never by grepping or hand-parsing the YAML
+yourself. You don't need to pass `--catalog-root` for normal use - the
+CLI already defaults to the current workspace's catalog as described
+above:
+
+```bash
+# Organization (role optional; contact/address optional overrides)
+"$DOCFLOW" catalog resolve --kind organization --query "临沂亦尔" --role supplier
+
+"$DOCFLOW" catalog resolve --kind organization --query "众壹" --role ship_to --address "义乌仓"
+
+# Product
+"$DOCFLOW" catalog resolve --kind product --query "ST01黑"
+
+# Template
+"$DOCFLOW" catalog resolve --kind template --query procurement_contract
+```
+
+Each call prints one JSON object with a `status`:
+
+| `status` | Meaning | What you do |
+|---|---|---|
+| `RESOLVED` | Exactly one match | Use the returned fields; don't ask the user to re-confirm what's already resolved |
+| `NOT_FOUND` | No match at all | Tell the user this name isn't in the Catalog; ask them for the missing details (Rule 3 - don't search elsewhere) |
+| `AMBIGUOUS` | Multiple candidates (e.g. two addresses, neither marked default) | Ask the user to pick, listing the `candidates` from the JSON - **ask only about the ambiguous field**, not everything about that organization |
+| `INVALID_CATALOG` | The Catalog itself is malformed | Report this as a Catalog configuration problem, not a business-data problem |
+
+Selection priority for a contact/address within a resolved organization
+(already implemented by `resolve` - you don't need to reason about this
+yourself, just read the result): explicit query > exact id/label match >
+Catalog default > sole candidate > `AMBIGUOUS`.
+
+Only ask the user about what's actually missing or ambiguous. If the
+current task's data already contains everything DocFlow's input contract
+needs (e.g. the user's file already spells out the full buyer/seller
+names, dates, and amounts), you don't need to resolve anything at all -
+Catalog lookups are a convenience for filling gaps, not a mandatory step.
+
+## Template paths
+
+Resolve the two real template paths in this order:
+
+1. If the user explicitly gives you paths, use them.
+2. Otherwise, resolve them from the Catalog:
+   `docflow catalog resolve --kind template --query procurement_contract`
+   and `... --query delivery_note`.
+3. Otherwise, check `DOCFLOW_CONTRACT_TEMPLATE` /
+   `DOCFLOW_DELIVERY_TEMPLATE` (kept for compatibility; prefer the Catalog
+   going forward).
+4. If none of the above resolve, **stop and tell the user** you don't
+   know where the real templates are. Do not guess a path, do not search
+   the filesystem for something that looks like a template (Rule 2), and
+   do not proceed without one.
+
+**First real generation in a fresh workspace** almost always hits step 4,
+because `templates.yaml` starts out empty (`docflow catalog init` creates
+it empty, it doesn't invent template locations). That's expected, not an
+error state - ask once:
+
+> 当前工作区还没有登记采购合同和送货单模板，请提供这两份模板；确认后可以
+> 保存到当前工作区，以后无需重复提供。
+
+If the user confirms saving, register both with `catalog apply` (see
+"Accumulating the Catalog"):
+
+```bash
+cat > change.json << 'EOF'
+[
+  {"operation": "set_template", "key": "procurement_contract",
+   "document_type": "procurement.contract.v1", "path": "/abs/path/to/contract-template.xlsx"},
+  {"operation": "set_template", "key": "delivery_note",
+   "document_type": "delivery.note.v1", "path": "/abs/path/to/delivery-template.xlsx"}
+]
+EOF
+"$DOCFLOW" catalog apply --input change.json
+```
+
+Next time, step 2 resolves both directly and you don't need to ask again.
 
 ## Input contract
 
@@ -118,20 +386,21 @@ Notes:
 
 - `business_reference`, `contract_no`, `delivery_no`, `contract_date`,
   `delivery_date`, `buyer`, `seller`, `ship_to` (all 4 sub-fields), and a
-  non-empty `items` array are required.
+  non-empty `items` array are required - these are current-task facts
+  (see above), except `buyer`/`seller`/`ship_to`, whose *name/contact/
+  address* details you may fill in from a Catalog `RESOLVED` result once
+  you know which organization the user means.
 - Each item requires `sku`, `product_name`, `specification`, `quantity`
   (> 0), `unit`, `gross_unit_price` (>= 0), `gross_amount` (>= 0, the
   authoritative fact), and `tax_rate` (>= 0). `remarks` is optional.
+  `product_name`/`specification`/`unit` may come from a Catalog product
+  resolve; `quantity`/`gross_unit_price`/`gross_amount`/`tax_rate` never do.
 - `currency` defaults to `"CNY"`. `seller_contact`/`seller_phone`/
   `seller_address` and the top-level `gross_total` are optional; supply
   `gross_total` only if you actually have an independent source total to
-  cross-check against (DocFlow will validate Σitem.gross_amount against
-  it) - do not compute one yourself just to fill the field.
+  cross-check against - do not compute one yourself just to fill the field.
 - Numbers may be given as JSON numbers or numeric strings; DocFlow parses
   them as `Decimal`. Do not pre-round or reformat them.
-- `NaN`/`Infinity` are rejected by DocFlow as invalid input - don't worry
-  about filtering them yourself, just pass through what the source gave
-  you and let DocFlow report it as a structured failure if it's bad.
 
 See `examples/batch.example.json` for a complete, synthetic, runnable
 batch file (never real company data).
@@ -139,7 +408,9 @@ batch file (never real company data).
 ## Building the batch file when input isn't already JSON
 
 You may receive business facts as a table, CSV, or another tool's
-structured output. Your job is **field mapping**, not **fact creation**:
+structured output - but only when the user has actually provided that
+data for *this* task (Rule 1). Your job is **field mapping**, not **fact
+creation**:
 
 - If the source clearly provides an authoritative gross/含税 figure per
   line (e.g. columns literally named 含税单价/含税金额/价税合计), map them
@@ -150,25 +421,9 @@ structured output. Your job is **field mapping**, not **fact creation**:
   Phase 0 不应静默推导该事实，请提供含税金额或含税单价。" Stop there for
   that record (or the whole request, if it affects all records) rather
   than guessing.
-
-## Template paths
-
-DocFlow does not have a config system for template paths (by design -
-this skill uses the CLI's existing arguments, nothing more). Resolve the
-two real template paths in this order:
-
-1. If the user explicitly gives you paths, use them.
-2. Otherwise, check the environment variables `DOCFLOW_CONTRACT_TEMPLATE`
-   and `DOCFLOW_DELIVERY_TEMPLATE` (a convention for your run environment,
-   not a DocFlow feature - just shell variables you read and pass through).
-3. If neither is available, **stop and tell the user** you don't know
-   where the real templates are. Do not guess a path, do not search the
-   filesystem for something that looks like a template, and do not
-   proceed without one.
-
-Real templates and real business data must never be committed to this
-repository, referenced from `tests/`/`examples/`/`skills/`, or otherwise
-written into a git-tracked path.
+- If the source names a supplier/ship-to/product by a short name, try
+  resolving it against the Catalog before asking the user to spell out
+  full details.
 
 ## Workspace and temp files
 
@@ -188,20 +443,18 @@ in this repo, and never default output into the repository itself.
 ## Invoking DocFlow
 
 ```bash
-docflow generate \
+"$DOCFLOW" generate \
   --input "$INPUT" \
-  --contract-template "$DOCFLOW_CONTRACT_TEMPLATE" \
-  --delivery-template "$DOCFLOW_DELIVERY_TEMPLATE" \
+  --contract-template "$CONTRACT_TEMPLATE_PATH" \
+  --delivery-template "$DELIVERY_TEMPLATE_PATH" \
   --output "$OUTPUT"
 ```
 
-If `docflow` isn't on `PATH` in your environment, fall back to
-`python -m docflow.cli generate ...` using the same arguments (check
-`command -v docflow` first rather than assuming either form works).
-
-There is nothing else to configure. Don't wrap this in a shell script or
-another Python file "for convenience" - a single CLI invocation per run is
-already the stable, minimal interface.
+There is no fallback to a global `docflow`, a system Python, or any other
+form - `$DOCFLOW` (this Skill's bundled launcher) is the only way this
+skill invokes DocFlow, always. There is nothing else to configure. Don't
+wrap this in a shell script or another Python file "for convenience" - a
+single CLI invocation per run is already the stable, minimal interface.
 
 ## Handling the exit code
 
@@ -224,12 +477,25 @@ problem (missing/invalid template, invalid mapping, unreadable batch
 file) using the message from stderr, and don't search for a manifest -
 none was written.
 
+`docflow catalog resolve` uses its own exit codes for scripting
+convenience (`0`=RESOLVED, `1`=NOT_FOUND/AMBIGUOUS, `2`=INVALID_CATALOG),
+but always read the JSON `status` field rather than relying on the exit
+code alone when deciding how to respond. `docflow catalog init`,
+`validate`, and `apply` use `0`=success, `2`=rejected/invalid.
+
+**A fourth code, `127`, is not a DocFlow status at all.** It comes from
+`$DOCFLOW` itself (the launcher), before DocFlow's own code ever ran,
+meaning the bundled runtime or `uv` couldn't start
+(`DOCFLOW_RUNTIME_UNAVAILABLE` on stderr). Treat that as an execution
+-environment problem distinct from 0/1/2 - not a business-data failure,
+and not something a different batch/input would fix.
+
 ## You must read manifest.json, not just the exit code
 
-For exit `0` or `1`, always read `<output-dir>/manifest.json` - never rely
-solely on the exit code or the `documents_passed=...`/`documents_failed=...`
-line the CLI prints to stdout. The manifest is the structured source of
-truth. Each entry has:
+For exit `0` or `1` of `docflow generate`, always read
+`<output-dir>/manifest.json` - never rely solely on the exit code or the
+`documents_passed=...`/`documents_failed=...` line the CLI prints to
+stdout. The manifest is the structured source of truth. Each entry has:
 
 ```text
 business_reference, document_type, template_id, template_version,
@@ -282,35 +548,102 @@ one-line reason - nothing more from the internals.
 错误：TEMPLATE_FILE_MISSING - template file not found: /path/to/template.xlsx
 ```
 
+## Accumulating the Catalog
+
+The Catalog grows only through explicit user confirmation - never
+silently, never automatically. Two shapes this takes:
+
+1. **User volunteers a save.** "众壹新增一个宁波仓，地址 XXX，以后保存起来。"
+   → build the operation and apply it now.
+2. **You notice something reusable and ask.** After a successful run, if
+   the user gave you an organization/address/contact detail that wasn't
+   already in the Catalog: "这个地址目前不在众壹的基础资料里，要保存成
+   '宁波仓'以后直接用吗？" → only apply if they say yes.
+
+Never write to the Catalog because you inferred it would be convenient,
+and never do it mid-task before the current documents are generated -
+accumulation is a wrap-up step, not a precondition.
+
+```bash
+cat > change.json << 'EOF'
+[
+  {
+    "operation": "upsert_address",
+    "organization": "zhongyi",
+    "address": {"id": "ningbo", "label": "宁波仓", "address": "浙江省宁波市……", "default": false}
+  }
+]
+EOF
+"$DOCFLOW" catalog apply --input change.json
+```
+
+Supported operations: `upsert_organization`, `upsert_contact`,
+`upsert_address`, `upsert_product`, `set_template`. `apply` validates the
+whole batch of operations before writing anything (atomic - a rejected
+operation means *none* of them are written) and re-validates after
+writing. If it exits `2`, nothing was saved; report the error and don't
+retry silently with different data. There is no delete, merge, or
+history/versioning operation - if the user wants something removed or
+restructured, tell them that's outside this skill's scope (hand-edit the
+Catalog files directly, which is a human/config action, not something
+this skill automates).
+
 ## Worked scenarios
 
-**A - single business, both documents.** Build one-record batch JSON from
-the user's data (gross-pricing facts, mapped not computed), resolve
-template paths, run `docflow generate`, read manifest, confirm both
-entries are PASS, report the two output file paths.
+**A - single business, both documents, no Catalog needed.** The user's
+current-task data already has full names/addresses. Build the batch JSON
+directly, resolve template paths, run `docflow generate`, read manifest,
+report the two output file paths.
 
-**B - batch with one bad record (good/bad/good).** Run once over the
+**B - short names, Catalog fills the gaps.** User: "供应商临沂亦尔，发众壹
+义乌仓" plus a data file with dates/amounts. Resolve `临沂亦尔` (role
+`supplier`) and `众壹` (role `ship_to`, address `义乌仓`) via
+`catalog resolve`; both come back `RESOLVED`. Do not ask for company full
+names, addresses, contacts, or phone numbers - you already have them.
+Build the batch, run, report.
+
+**C - address ambiguity.** `众壹` has 义乌仓 and 广州仓, neither marked
+default. `catalog resolve --kind organization --query 众壹` returns
+`AMBIGUOUS` with `field: "address"`. Ask exactly one question: "众壹目前
+有义乌仓和广州仓，这次发哪个？" Don't ask about anything else that already
+resolved.
+
+**D - no data provided (Rule 1), fresh workspace.** User: "我有一批采购
+数据，帮我生成合同和送货单。" No file, no path - possibly not even a
+Catalog yet (`docflow catalog init` may run here, which is fine, that's
+just bootstrapping `$PWD/.docflow/catalog`, not touching business data).
+Do not search `local/`, `golden/`, iCloud, or anywhere else. Respond:
+"请提供或指定本次业务数据。" Do not run DocFlow.
+
+**E - batch with one bad record (good/bad/good).** Run once over the
 3-record batch. Exit will be `1`. Read the manifest: 2 records x 2
 documents = 4 PASS entries, 1 record x 2 documents = 2 FAILED entries.
 Report 2/3 succeeded, list the failed record's issue codes, and give the
 paths to the 4 successful files. Do not re-run per record and do not
 treat exit 1 as total failure.
 
-**C - template path wrong.** `docflow` exits `2`. Report that the batch
-did not run due to a template configuration problem (missing or invalid
-file - read the exact reason from stderr), and do not claim any business
-record was processed.
+**F - template path wrong.** `docflow generate` exits `2`. Report that the
+batch did not run due to a template configuration problem (missing or
+invalid file - read the exact reason from stderr), and do not claim any
+business record was processed.
 
-**D - missing gross facts.** The source data has `quantity`,
+**G - missing gross facts.** The source data has `quantity`,
 `net_unit_price`, `tax_rate` but no `gross_unit_price`/`gross_amount`. Do
 not compute gross figures from the net price. Tell the user DocFlow Phase
 0 requires the authoritative gross fact and ask them to supply it (or
 confirm you cannot proceed without it).
 
-**E - the rounding-tolerance case.** Source gives
+**H - the rounding-tolerance case.** Source gives
 `quantity=42, gross_unit_price=49, gross_amount=2058, tax_rate=0.13`.
 Pass these through verbatim - do not recompute or "sanity check" them
 yourself. DocFlow's engine derives `net_unit_price=43.36`,
 `net_amount=1821.24`, `tax_amount=236.76`. If your own mental math gives a
 different number, trust the engine's output, not your arithmetic - that's
 the entire point of this skill's boundary.
+
+**I - new address, save after confirmation.** User: "发众壹宁波仓，地址是
+XXX" and 宁波仓 isn't in the Catalog. Use the user-supplied address for
+*this* task's `ship_to` directly (Rule 1 - it's current-task data they
+gave you). After the documents are generated, ask: "众壹的'宁波仓'还没在
+基础资料里，要保存下来以后直接用吗？" Only call `catalog apply` if they
+confirm. Next time, "众壹宁波仓" resolves directly.

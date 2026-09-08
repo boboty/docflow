@@ -1,0 +1,18 @@
+# Synthetic example Reference Catalog - products.
+# Only long-lived facts (name/specification/unit/aliases) - never price,
+# tax rate, or any other transaction fact. See SKILL.md section on why.
+products:
+  SKU-EXAMPLE-001:
+    name: 示例产品A
+    specification: SKU-EXAMPLE-001
+    unit: 双
+    aliases:
+      - 示例A
+      - A产品
+
+  SKU-EXAMPLE-002:
+    name: 示例产品B
+    specification: SKU-EXAMPLE-002
+    unit: 个
+    aliases:
+      - 示例B

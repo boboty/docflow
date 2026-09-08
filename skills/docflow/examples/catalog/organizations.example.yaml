@@ -1,0 +1,55 @@
+# Synthetic example Reference Catalog - organizations.
+# A real catalog root's organizations.yaml has this exact shape (top-level
+# "organizations" key), but must never be committed to this repository.
+# See skills/docflow/SKILL.md for how an agent should use this.
+organizations:
+  supplier_example_co:
+    name: 示例供应商有限公司
+    roles:
+      - supplier
+    aliases:
+      - 示例供应商
+      - 供应商甲
+    contacts:
+      - id: default
+        label: 默认联系人
+        name: 张三
+        phone: "10000000001"
+        default: true
+      - id: finance
+        label: 财务
+        name: 李四
+        phone: "10000000002"
+        default: false
+    addresses:
+      - id: registered
+        label: 注册地址
+        address: 示例省示例市示例注册地址1号
+        default: true
+      - id: warehouse
+        label: 仓库
+        address: 示例省示例市示例仓库地址2号
+        default: false
+
+  example_forwarder:
+    name: 示例货代供应链有限公司
+    roles:
+      - freight_forwarder
+      - ship_to
+    aliases:
+      - 示例货代
+    contacts:
+      - id: receiving
+        label: 默认收货联系人
+        name: 王五
+        phone: "10000000003"
+        default: true
+    addresses:
+      - id: warehouse_a
+        label: 甲仓
+        address: 示例省示例市示例甲仓地址3号
+        default: false
+      - id: warehouse_b
+        label: 乙仓
+        address: 示例省示例市示例乙仓地址4号
+        default: false

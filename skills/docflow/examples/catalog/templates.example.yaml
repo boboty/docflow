@@ -1,0 +1,10 @@
+# Synthetic example Reference Catalog - registered template paths.
+# Real entries must point to real, absolute paths outside this repository.
+templates:
+  procurement_contract:
+    document_type: procurement.contract.v1
+    path: /absolute/path/to/real/procurement-contract-template.xlsx
+
+  delivery_note:
+    document_type: delivery.note.v1
+    path: /absolute/path/to/real/delivery-note-template.xlsx

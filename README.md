@@ -21,8 +21,32 @@ business data
 An agent with local shell/filesystem access should follow
 [skills/docflow/SKILL.md](skills/docflow/SKILL.md) rather than calling any
 Python API directly - it documents the input contract, exit-code
-semantics, manifest handling, and (most importantly) the boundary that
-the agent must never compute an authoritative money fact itself.
+semantics, manifest handling, the `docflow catalog` commands for
+resolving stable supplier/ship-to/product/template facts (see below), and
+(most importantly) the boundary that the agent must never compute an
+authoritative money fact itself or invent a business-data source by
+scanning the filesystem.
+
+## Reference Catalog
+
+A small, YAML-backed store of long-lived facts (organizations and their
+roles/contacts/addresses, products, registered template paths) that lets
+an agent resolve a short name like "众壹" into full details instead of
+asking the user to repeat them every time. It is not a database, not a
+system of record, and never stores transaction facts (price, quantity,
+dates, document numbers) - see `src/docflow/catalog/` and
+`skills/docflow/SKILL.md`. Root is configured via `--catalog-root` or
+`DOCFLOW_CATALOG_ROOT`, never auto-discovered:
+
+```bash
+docflow catalog validate --catalog-root "$DOCFLOW_CATALOG_ROOT"
+docflow catalog resolve --catalog-root "$DOCFLOW_CATALOG_ROOT" \
+  --kind organization --query "众壹" --role ship_to --json
+docflow catalog apply --catalog-root "$DOCFLOW_CATALOG_ROOT" --input change.json
+```
+
+Real Catalog data is never committed; `skills/docflow/examples/catalog/*.example.yaml`
+is a synthetic schema reference only.
 
 ## What this is not
 
@@ -103,7 +127,12 @@ src/docflow/
 │   └── batch_input.py     # JSON batch -> DocumentFactPack (the only JSON-aware code)
 ├── application/
 │   └── generation.py      # orchestration: validate -> derive -> render -> manifest
-└── cli.py                 # `docflow generate ...`
+├── catalog/               # Reference Catalog - decoupled from the Engine above;
+│   ├── models.py          # Organization/Contact/Address/Product/TemplateEntry
+│   ├── loader.py          # YAML -> Catalog, structural/semantic validation
+│   ├── resolve.py         # deterministic name/alias -> RESOLVED/NOT_FOUND/AMBIGUOUS
+│   └── mutation.py        # explicit-confirmation-only, all-or-nothing apply
+└── cli.py                 # `docflow generate ...` / `docflow catalog ...`
 ```
 
 ## Usage

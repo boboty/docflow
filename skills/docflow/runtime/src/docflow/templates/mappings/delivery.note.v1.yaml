@@ -1,0 +1,45 @@
+# Mapping for the real "送货单" xlsx template.
+# Coordinates derived from manual inspection of a real template instance
+# (item table at rows 7-24, total formula at row 25). The template file
+# itself is never committed.
+id: delivery.note.v1
+format: xlsx
+sheet: 送货单
+
+header:
+  A3: "收货单位：{ship_to_company}"
+  D3: "联系人：{ship_to_contact}"
+  F3: "NO：{delivery_no}"
+  A4: "收货地址：{ship_to_address}"
+  A5: "联系电话：{ship_to_phone}"
+  E5: "日期：{delivery_date}"
+  A28: "送货单位：{seller}"
+  A29: "地址：{seller_address}"
+  A30: "联系电话：{seller_contact}{seller_phone}"
+  A33: "送货单位：{seller}"
+  E33: "收货单位：{ship_to_company}"
+
+items:
+  start_row: 7
+  end_row: 24
+  columns:
+    index: A
+    product_name: B
+    specification: C
+    quantity: D
+    unit: E
+    gross_unit_price: F
+    gross_amount: G
+    remarks: H
+  # Column G (金额/元) is written as the LITERAL authoritative gross_amount
+  # source fact, not a recomputed =Dn*Fn formula (Phase 0 Repair-2 P0
+  # blocker: gross_unit_price*quantity is only guaranteed to match
+  # gross_amount within a documented rounding tolerance - a per-row
+  # formula would silently show a different number than the contract's I
+  # column whenever that tolerance is used, so the two real files could
+  # disagree on business content despite both passing validation). Unused
+  # rows are cleared like every other mapped column. The template's own
+  # D25 = SUM(G7:G24) total is a fixed-range aggregate formula left
+  # untouched - since G always holds the true gross_amount, its sum is
+  # correct; it recalculates automatically once Excel opens the file
+  # (fullCalcOnLoad).
