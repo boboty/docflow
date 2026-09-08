@@ -2,30 +2,49 @@
 
 There is no auto-learning and no implicit write path: this module is only
 ever invoked when a user has explicitly confirmed a change (see
-skills/docflow/SKILL.md). An apply is all-or-nothing - every operation in
-the batch is validated against the resulting *candidate* catalog state
-before anything is written to disk, and the write itself is atomic
-per-file (write-temp-then-rename). No delete, no merge, no history: only
-upsert_organization / upsert_contact / upsert_address / upsert_product /
-set_template, matching Reference Catalog v0 section 13 exactly.
+skills/docflow/SKILL.md).
+
+Two distinct mutation paths, matching a clean ownership boundary:
+
+  - `apply_operations()` / `catalog apply`: stable YAML facts only
+    (organizations, contacts, addresses, products). All-or-nothing - every
+    operation in the batch is validated against the resulting *candidate*
+    catalog state before anything is written to disk, and the write itself
+    is atomic per-file (write-temp-then-rename).
+  - `import_template()` / `catalog import-template`: the ONLY way to
+    register a template. There is deliberately no `set_template` operation
+    in `apply_operations` - a template is a binary asset plus a Catalog
+    entry, not a plain fact, and letting `catalog apply` accept an
+    arbitrary external path would let an agent bypass the whole
+    managed-copy lifecycle (Managed Template Lifecycle section 11). This
+    module intentionally imports `docflow.templates`/`docflow.renderers`
+    (the Engine's own template registry and xlsx preflight) specifically
+    so a proposed template is validated with the exact same rules
+    `docflow generate` would apply to it - not a re-implementation of that
+    validation.
 """
 from __future__ import annotations
 
 import copy
 import json
+import shutil
 from pathlib import Path
 from typing import Any
 
 import yaml
 
 from docflow.catalog.loader import load_catalog, load_raw_sections, parse_catalog_dict
+from docflow.catalog.root import managed_template_root
+from docflow.domain.document import DocumentType
+from docflow.renderers.xlsx import preflight
+from docflow.templates.definition import TemplateDefinitionError
+from docflow.templates.registry import TemplateRegistry
 
 _KNOWN_OPERATIONS = {
     "upsert_organization",
     "upsert_contact",
     "upsert_address",
     "upsert_product",
-    "set_template",
 }
 
 
@@ -113,14 +132,7 @@ def _apply_upsert_product(op: dict, index: int, products_raw: dict) -> None:
     products_raw[product_id] = product
 
 
-def _apply_set_template(op: dict, index: int, templates_raw: dict) -> None:
-    key = _require_str(op, "key", index)
-    document_type = _require_str(op, "document_type", index)
-    path = _require_str(op, "path", index)
-    templates_raw[key] = {"document_type": document_type, "path": path}
-
-
-def _apply_one(op: Any, index: int, organizations_raw: dict, products_raw: dict, templates_raw: dict) -> None:
+def _apply_one(op: Any, index: int, organizations_raw: dict, products_raw: dict) -> None:
     if not isinstance(op, dict):
         raise CatalogMutationError("INVALID_OPERATION", f"operations[{index}] must be an object")
     operation = op.get("operation")
@@ -135,8 +147,6 @@ def _apply_one(op: Any, index: int, organizations_raw: dict, products_raw: dict,
         _apply_upsert_sub_entry(op, index, organizations_raw, "address", "addresses")
     elif operation == "upsert_product":
         _apply_upsert_product(op, index, products_raw)
-    elif operation == "set_template":
-        _apply_set_template(op, index, templates_raw)
 
 
 def _write_yaml_atomic(path: Path, top_key: str, section: dict) -> None:
@@ -151,18 +161,89 @@ def apply_operations(root: Path, operations: list[dict[str, Any]]) -> None:
     organizations_raw, products_raw, templates_raw = load_raw_sections(root)
     organizations_raw = copy.deepcopy(organizations_raw)
     products_raw = copy.deepcopy(products_raw)
-    templates_raw = copy.deepcopy(templates_raw)
 
     for index, op in enumerate(operations):
-        _apply_one(op, index, organizations_raw, products_raw, templates_raw)
+        _apply_one(op, index, organizations_raw, products_raw)
 
     # Validate the candidate state with the exact same rules a fresh load
-    # would apply, BEFORE writing anything.
+    # would apply, BEFORE writing anything. templates_raw is untouched by
+    # this function (see module docstring - templates go through
+    # import_template instead) but is still passed through so the
+    # validation covers the whole real catalog, not a fragment of it.
     parse_catalog_dict(organizations_raw, products_raw, templates_raw)
 
     _write_yaml_atomic(root / "organizations.yaml", "organizations", organizations_raw)
     _write_yaml_atomic(root / "products.yaml", "products", products_raw)
-    _write_yaml_atomic(root / "templates.yaml", "templates", templates_raw)
 
     # Re-validate from disk - defensive, but explicit per spec.
     load_catalog(root)
+
+
+def import_template(catalog_root: Path, key: str, document_type: str, source: Path, replace: bool) -> None:
+    """The only sanctioned way to register a template (see module
+    docstring). Order matters for failure safety (Managed Template
+    Lifecycle section 7): every validation that can fail happens before
+    any filesystem mutation; the managed binary asset is committed (via
+    rename) before the catalog YAML is written, so the catalog can never
+    end up pointing at a managed file that doesn't exist - the reverse
+    (file written, catalog not yet updated) is the only possible
+    inconsistency, and a retry from that state is always safe.
+    """
+    try:
+        doc_type = DocumentType(document_type)
+    except ValueError as exc:
+        raise CatalogMutationError(
+            "UNSUPPORTED_DOCUMENT_TYPE",
+            f"{document_type!r} is not a supported document type "
+            f"(expected one of: {[d.value for d in DocumentType]})",
+        ) from exc
+
+    registry = TemplateRegistry()
+    try:
+        definition = registry.get(doc_type)
+    except (FileNotFoundError, TemplateDefinitionError) as exc:
+        raise CatalogMutationError("TEMPLATE_MAPPING_INVALID", str(exc)) from exc
+
+    # Reuses the exact preflight docflow generate would run: file exists,
+    # is a valid xlsx, has the mapped sheet, every header/text placeholder
+    # and item column is valid, no mapped cell is a non-anchor merged
+    # cell. Raises TemplatePreflightError (not caught here - it already
+    # carries a clear code/message) on any problem; nothing has been
+    # written yet at this point.
+    preflight(definition, source)
+
+    organizations_raw, products_raw, templates_raw = load_raw_sections(catalog_root)
+
+    if key in templates_raw and not replace:
+        raise CatalogMutationError(
+            "TEMPLATE_ALREADY_EXISTS",
+            f"template {key!r} is already registered - pass --replace to overwrite it",
+        )
+
+    filename = f"{key}.xlsx"
+    managed_dir = managed_template_root(catalog_root)
+    managed_dir.mkdir(parents=True, exist_ok=True)
+    final_path = managed_dir / filename
+    tmp_path = managed_dir / f".{filename}.tmp"
+    # Relative to catalog_root (managed_template_root is always its fixed
+    # sibling "templates" dir) - so a moved/copied workspace keeps working
+    # without rewriting the Catalog. See resolve.resolve_template_path.
+    relative_path = f"../templates/{filename}"
+
+    candidate_templates_raw = dict(templates_raw)
+    candidate_templates_raw[key] = {"document_type": document_type, "path": relative_path}
+
+    # Validate the candidate catalog state BEFORE committing anything.
+    parse_catalog_dict(organizations_raw, products_raw, candidate_templates_raw)
+
+    try:
+        shutil.copyfile(source, tmp_path)
+        tmp_path.replace(final_path)
+    except Exception:
+        if tmp_path.exists():
+            tmp_path.unlink()
+        raise
+
+    _write_yaml_atomic(catalog_root / "templates.yaml", "templates", candidate_templates_raw)
+
+    load_catalog(catalog_root)

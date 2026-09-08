@@ -155,6 +155,38 @@ def test_catalog_apply_through_launcher(tmp_path):
     assert json.loads(result.stdout)["status"] == "RESOLVED"
 
 
+# Managed Template Lifecycle test 9: import-template must work through
+# the bundled launcher in an isolated Skill copy, not just the repo's own
+# editable environment.
+def test_catalog_import_template_through_isolated_skill_copy(tmp_path):
+    sys.path.insert(0, str(REPO_ROOT / "tests"))
+    from fixtures.synthetic_templates import build_contract_template
+
+    isolated_skill = tmp_path / "isolated-skill"
+    shutil.copytree(SKILL_DIR, isolated_skill)
+    isolated_launcher = isolated_skill / "scripts" / "docflow"
+
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    source = build_contract_template(tmp_path / "external.xlsx")
+
+    result = _run([
+        "catalog", "import-template",
+        "--key", "procurement_contract", "--document-type", "procurement.contract.v1",
+        "--source", str(source),
+    ], cwd=workspace, launcher=isolated_launcher)
+    assert result.returncode == 0, result.stderr
+    assert (workspace / ".docflow" / "templates" / "procurement_contract.xlsx").exists()
+
+    result = _run(["catalog", "resolve", "--kind", "template", "--query", "procurement_contract"],
+                   cwd=workspace, launcher=isolated_launcher)
+    assert result.returncode == 0, result.stderr
+    resolved = json.loads(result.stdout)
+    assert resolved["status"] == "RESOLVED"
+    assert Path(resolved["path"]).exists()
+    assert str(REPO_ROOT) not in resolved["path"]
+
+
 # 10/11. `generate` runs through the bundled runtime and correctly loads
 # package data (template mappings) - a real render, not just a syntax check.
 def test_generate_through_bundled_runtime_loads_template_mappings(tmp_path):

@@ -75,7 +75,9 @@ edit, move, or delete anything under this Skill's own directory
 (`SKILL.md`, `scripts/`, `runtime/`, `examples/`) while carrying out a
 task - not the runtime's source, not its lockfile, not this document.
 The only place state changes as a result of using this skill is the
-current workspace: `.docflow/catalog/`, the user's business input, and
+current workspace: `.docflow/catalog/`, `.docflow/templates/` (managed
+template assets - written only by `catalog import-template`, never by
+you copying a file there directly), the user's business input, and
 `output/`. If something about the Skill itself seems wrong (missing
 runtime, corrupted files), report it - don't try to patch, regenerate, or
 "fix" the Skill's own files yourself.
@@ -371,12 +373,56 @@ needs (e.g. the user's file already spells out the full buyer/seller
 names, dates, and amounts), you don't need to resolve anything at all -
 Catalog lookups are a convenience for filling gaps, not a mandatory step.
 
-## Template paths
+## Template paths and their two lifecycles
 
-Resolve the two real template paths in this order:
+A template file the user points you to is a **source**. Once explicitly
+saved, the Catalog owns a **managed copy** of it under the workspace's
+own `.docflow/templates/` and never depends on that external location
+again. Keep these two lifecycles separate:
 
-1. If the user explicitly gives you paths, use them.
-2. Otherwise, resolve them from the Catalog:
+**A. Used just for this task.** The user gives you a path and says
+nothing about saving it ("用这份文件生成本次的单子"). Run preflight against
+it and generate - that's the entire scope. Do not call
+`catalog import-template`, do not touch the Catalog at all.
+
+**B. Saved as the default template.** The user says something like
+保存 / 登记 / 以后默认用 / 记住这个模板. This is the ONLY way a template
+gets registered:
+
+```bash
+"$DOCFLOW" catalog import-template \
+  --key procurement_contract --document-type procurement.contract.v1 \
+  --source "/external/path/采购合同.xlsx"
+
+"$DOCFLOW" catalog import-template \
+  --key delivery_note --document-type delivery.note.v1 \
+  --source "/external/path/送货单.xlsx"
+```
+
+This runs the real preflight against the source, copies it into
+`.docflow/templates/` under a canonical name (`procurement_contract.xlsx`
+/ `delivery_note.xlsx` - never the source's own filename, which usually
+carries a previous transaction's contract/delivery number), and points
+the Catalog at that managed copy with a path relative to the Catalog
+root - never the external absolute path. **Never use
+`catalog apply` with a `set_template` operation to register a
+template** - it isn't part of the mutation contract precisely so this
+copy-in step can't be skipped. If the user later says "用这份替换以后默认
+模板" (replace the registered one), that explicit instruction is what
+authorizes adding `--replace`; without it, a second `import-template` for
+an already-registered key fails with `TEMPLATE_ALREADY_EXISTS` and
+changes nothing - that's the correct behavior, not an error to work
+around.
+
+**Resolving which path to actually use, in order:**
+
+1. If the user explicitly gives you a path for *this* task, use it - even
+   if the Catalog already has a `RESOLVED` entry for that template. An
+   explicit per-task path always overrides the registered default; it
+   does not imply replacing the default (that needs its own separate
+   instruction, per "Catalog persistence needs its own, separate
+   authorization").
+2. Otherwise, resolve from the Catalog:
    `docflow catalog resolve --kind template --query procurement_contract`
    and `... --query delivery_note`.
 3. Otherwise, check `DOCFLOW_CONTRACT_TEMPLATE` /
@@ -395,22 +441,9 @@ error state - ask once:
 > 当前工作区还没有登记采购合同和送货单模板，请提供这两份模板；确认后可以
 > 保存到当前工作区，以后无需重复提供。
 
-If the user confirms saving, register both with `catalog apply` (see
-"Catalog persistence needs its own, separate authorization"):
-
-```bash
-cat > change.json << 'EOF'
-[
-  {"operation": "set_template", "key": "procurement_contract",
-   "document_type": "procurement.contract.v1", "path": "/abs/path/to/contract-template.xlsx"},
-  {"operation": "set_template", "key": "delivery_note",
-   "document_type": "delivery.note.v1", "path": "/abs/path/to/delivery-template.xlsx"}
-]
-EOF
-"$DOCFLOW" catalog apply --input change.json
-```
-
-Next time, step 2 resolves both directly and you don't need to ask again.
+If the user confirms saving, use `catalog import-template` (lifecycle B
+above) for each of the two templates. Next time, step 2 resolves both
+directly and you don't need to ask again.
 
 ## Input contract
 
@@ -637,7 +670,12 @@ that merely *looks* like permission. In particular:
     instructions, and only the second one triggers `catalog apply`.
 
 Only an explicit instruction like 保存 / 登记 / 以后默认用 / 记下来 / 加入
-Catalog authorizes a write. Two shapes this takes:
+Catalog authorizes a write. For organizations/contacts/addresses/products
+that means `catalog apply`; for a template it means `catalog
+import-template` instead (see "Template paths and their two lifecycles"
+above) - the two are separate commands with separate mechanics
+precisely because a template is a binary asset plus a Catalog entry, not
+a plain YAML fact. Two shapes the authorization itself takes:
 
 1. **User volunteers a save.** "众壹新增一个宁波仓，地址 XXX，以后保存起来。"
    → build the operation and apply it now.
@@ -663,14 +701,18 @@ EOF
 "$DOCFLOW" catalog apply --input change.json
 ```
 
-Supported operations: `upsert_organization`, `upsert_contact`,
-`upsert_address`, `upsert_product`, `set_template`. `apply` validates the
+`catalog apply` supports exactly: `upsert_organization`, `upsert_contact`,
+`upsert_address`, `upsert_product` - **no `set_template`**. Templates are
+not part of this operation's contract at all; passing one is rejected as
+`UNKNOWN_OPERATION`, precisely so a template registration can't skip the
+managed-copy step `import-template` performs. `apply` validates the
 whole batch of operations before writing anything (atomic - a rejected
 operation means *none* of them are written) and re-validates after
 writing. If it exits `2`, nothing was saved; report the error and don't
 retry silently with different data. There is no delete, merge, or
-history/versioning operation - if the user wants something removed or
-restructured, tell them that's outside this skill's scope (hand-edit the
+history/versioning operation for either command - if the user wants
+something removed or restructured, tell them that's outside this skill's
+scope (hand-edit the
 Catalog files directly, which is a human/config action, not something
 this skill automates).
 
@@ -764,3 +806,15 @@ Rule 5 reserves for the Engine. Read the manifest, confirm every entry's
 DocFlow 校验通过，已生成 N 份文档" (or the "All PASS" template under
 "Reporting results to the user"). The numbers being correct doesn't change
 this - the point is that DocFlow said so, not that you re-derived it.
+
+**M - external templates, used now and saved as default.** User gives two
+iCloud paths and says "这两份本次使用，并保存为以后默认模板。" Use the paths
+directly for this generation (lifecycle A). Because they also said "保存
+为以后默认模板", separately run `catalog import-template` for each one
+(lifecycle B) - do not just write the external absolute paths into the
+Catalog. After this, `.docflow/templates/procurement_contract.xlsx` and
+`.docflow/templates/delivery_note.xlsx` exist, `templates.yaml` holds
+relative paths, and the external iCloud files could be renamed or deleted
+without affecting a future task - it's a source, not something the
+Catalog depends on going forward. Verify by trying a second generation
+after the external files are gone: it must still succeed.

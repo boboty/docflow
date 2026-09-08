@@ -8,6 +8,7 @@ guess": a query either resolves to exactly one entity or it doesn't.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Sequence
 
 from docflow.catalog.loader import normalize
@@ -155,7 +156,21 @@ def resolve_product(catalog: Catalog, query: str) -> dict[str, Any]:
     }
 
 
-def resolve_template(catalog: Catalog, query: str) -> dict[str, Any]:
+def resolve_template_path(path: str, catalog_root: Path) -> str:
+    """A stored template path may be a legacy absolute path (read-compatible
+    forever - see Managed Template Lifecycle section 10) or a
+    workspace-managed relative path (resolved against `catalog_root`, so a
+    moved/copied workspace keeps working - section 8/9). Either way, the
+    caller gets back a path it can hand straight to `docflow generate`
+    without knowing which kind it was.
+    """
+    candidate = Path(path)
+    if candidate.is_absolute():
+        return str(candidate)
+    return str((catalog_root / candidate).resolve())
+
+
+def resolve_template(catalog: Catalog, query: str, catalog_root: Path) -> dict[str, Any]:
     nq = normalize(query)
     candidates = [t for t in catalog.templates.values() if normalize(t.key) == nq]
 
@@ -174,5 +189,5 @@ def resolve_template(catalog: Catalog, query: str) -> dict[str, Any]:
         "kind": "template",
         "key": template.key,
         "document_type": template.document_type,
-        "path": template.path,
+        "path": resolve_template_path(template.path, catalog_root),
     }

@@ -25,3 +25,13 @@ def resolve_catalog_root(explicit: Path | None = None, cwd: Path | None = None) 
     if env:
         return Path(env)
     return (cwd if cwd is not None else Path.cwd()) / WORKSPACE_CATALOG_SUBPATH
+
+
+def managed_template_root(catalog_root: Path) -> Path:
+    """Where imported (workspace-managed) template assets live - always a
+    fixed sibling of the catalog root, never independently configurable
+    (no new env var, no `--template-root`; see Managed Template Lifecycle
+    section 4 - YAGNI). For the default catalog root
+    ($PWD/.docflow/catalog) this is $PWD/.docflow/templates.
+    """
+    return catalog_root.parent / "templates"

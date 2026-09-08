@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from docflow.catalog.models import Address, Catalog, Contact, Organization, Product, TemplateEntry
 from docflow.catalog.resolve import resolve_organization, resolve_product, resolve_template
 
@@ -191,19 +193,33 @@ def test_product_not_found():
 
 
 # 16. template resolve
-def test_resolve_template_by_key():
+def test_resolve_template_by_key(tmp_path):
     template = TemplateEntry(key="procurement_contract", document_type="procurement.contract.v1", path="/x.xlsx")
     catalog = _catalog(templates={template.key: template})
-    result = resolve_template(catalog, "procurement_contract")
+    result = resolve_template(catalog, "procurement_contract", catalog_root=tmp_path)
     assert result["status"] == "RESOLVED"
     assert result["document_type"] == "procurement.contract.v1"
-    assert result["path"] == "/x.xlsx"
+    assert result["path"] == "/x.xlsx"  # absolute path: returned as-is (legacy-compatible)
 
 
-def test_resolve_template_not_found():
+def test_resolve_template_not_found(tmp_path):
     catalog = _catalog()
-    result = resolve_template(catalog, "no_such_template")
+    result = resolve_template(catalog, "no_such_template", catalog_root=tmp_path)
     assert result["status"] == "NOT_FOUND"
+
+
+def test_resolve_template_relative_path_resolved_against_catalog_root(tmp_path):
+    catalog_root = tmp_path / "workspace" / ".docflow" / "catalog"
+    template = TemplateEntry(
+        key="procurement_contract", document_type="procurement.contract.v1",
+        path="../templates/procurement_contract.xlsx",
+    )
+    catalog = _catalog(templates={template.key: template})
+    result = resolve_template(catalog, "procurement_contract", catalog_root=catalog_root)
+    assert result["status"] == "RESOLVED"
+    expected = (catalog_root / "../templates/procurement_contract.xlsx").resolve()
+    assert result["path"] == str(expected)
+    assert Path(result["path"]).is_absolute()
 
 
 def test_resolve_normalizes_whitespace_and_case_for_ascii():

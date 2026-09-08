@@ -107,12 +107,20 @@ def test_apply_upsert_product(tmp_path: Path):
     assert catalog.products["SKU-X"].name == "示例产品X"
 
 
-def test_apply_set_template(tmp_path: Path):
-    apply_operations(tmp_path, [{
-        "operation": "set_template",
-        "key": "procurement_contract",
-        "document_type": "procurement.contract.v1",
-        "path": "/abs/path/contract.xlsx",
-    }])
-    catalog = load_catalog(tmp_path)
-    assert catalog.templates["procurement_contract"].path == "/abs/path/contract.xlsx"
+def test_apply_rejects_set_template_as_unknown_operation(tmp_path: Path):
+    """set_template is deliberately NOT part of the public `catalog apply`
+    mutation contract (Managed Template Lifecycle section 11) - template
+    registration only happens through `catalog import-template`, which
+    enforces the managed-copy lifecycle. Accepting set_template here would
+    let an agent register an arbitrary external absolute path directly,
+    bypassing that entirely.
+    """
+    with pytest.raises(CatalogMutationError) as exc_info:
+        apply_operations(tmp_path, [{
+            "operation": "set_template",
+            "key": "procurement_contract",
+            "document_type": "procurement.contract.v1",
+            "path": "/abs/path/contract.xlsx",
+        }])
+    assert exc_info.value.code == "UNKNOWN_OPERATION"
+    assert not (tmp_path / "templates.yaml").exists()

@@ -197,3 +197,50 @@ def test_init_cli_rejects_and_preserves_malformed_existing_catalog(tmp_path, cap
     exit_code = main(["catalog", "init", "--catalog-root", str(root)])
     assert exit_code == 2
     assert (root / "organizations.yaml").read_text(encoding="utf-8") == bad_content
+
+
+def test_import_template_cli_end_to_end(tmp_path, capsys):
+    from tests.fixtures.synthetic_templates import build_contract_template
+
+    catalog_root = tmp_path / "catalog"
+    source = build_contract_template(tmp_path / "external.xlsx")
+
+    exit_code = main([
+        "catalog", "import-template", "--catalog-root", str(catalog_root),
+        "--key", "procurement_contract", "--document-type", "procurement.contract.v1",
+        "--source", str(source),
+    ])
+    assert exit_code == 0, capsys.readouterr()
+    capsys.readouterr()
+
+    exit_code = main([
+        "catalog", "resolve", "--catalog-root", str(catalog_root),
+        "--kind", "template", "--query", "procurement_contract",
+    ])
+    assert exit_code == 0
+    import json
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "RESOLVED"
+    assert Path(result["path"]).exists()
+    assert "external" not in result["path"]
+
+
+def test_import_template_cli_rejects_existing_without_replace(tmp_path, capsys):
+    from tests.fixtures.synthetic_templates import build_contract_template
+
+    catalog_root = tmp_path / "catalog"
+    source = build_contract_template(tmp_path / "external.xlsx")
+    args = [
+        "catalog", "import-template", "--catalog-root", str(catalog_root),
+        "--key", "procurement_contract", "--document-type", "procurement.contract.v1",
+        "--source", str(source),
+    ]
+    assert main(args) == 0
+    capsys.readouterr()
+
+    exit_code = main(args)  # no --replace
+    assert exit_code == 2
+    assert "TEMPLATE_ALREADY_EXISTS" in capsys.readouterr().err
+
+    exit_code = main([*args, "--replace"])
+    assert exit_code == 0

@@ -68,6 +68,25 @@ docflow catalog resolve --kind organization --query "众壹" --role ship_to --js
 docflow catalog apply --input change.json
 ```
 
+**Templates are registered separately**, via `catalog import-template`,
+never through `catalog apply`. An external template path is a *source*;
+registering it copies the file into the workspace's own
+`.docflow/templates/` under a canonical name and points the Catalog at
+that managed copy (a path relative to the Catalog root, not the external
+absolute path) - so the workspace no longer depends on where the source
+file happened to live, and can be copied/moved as a whole:
+
+```bash
+docflow catalog import-template \
+  --key procurement_contract --document-type procurement.contract.v1 \
+  --source /external/path/采购合同.xlsx
+# re-run with --replace to overwrite an already-registered key
+```
+
+`catalog resolve --kind template` transparently resolves both legacy
+absolute-path entries (from before this existed) and managed relative
+ones, always returning an absolute path usable straight away.
+
 Real Catalog data is never committed; `skills/docflow/examples/catalog/*.example.yaml`
 is a synthetic schema reference only.
 
@@ -155,11 +174,18 @@ src/docflow/
 │   └── batch_input.py     # JSON batch -> DocumentFactPack (the only JSON-aware code)
 ├── application/
 │   └── generation.py      # orchestration: validate -> derive -> render -> manifest
-├── catalog/               # Reference Catalog - decoupled from the Engine above;
+├── catalog/
 │   ├── models.py          # Organization/Contact/Address/Product/TemplateEntry
 │   ├── loader.py          # YAML -> Catalog, structural/semantic validation
+│   ├── root.py            # catalog root + managed_template_root resolution
 │   ├── resolve.py         # deterministic name/alias -> RESOLVED/NOT_FOUND/AMBIGUOUS
-│   └── mutation.py        # explicit-confirmation-only, all-or-nothing apply
+│   ├── bootstrap.py       # `catalog init` - creates only missing files
+│   └── mutation.py        # `apply` (YAML facts, all-or-nothing) and
+│                          # `import_template` (the only path that registers
+│                          # a template: preflight -> managed copy -> Catalog);
+│                          # these two deliberately import the Engine's own
+│                          # template registry/preflight rather than
+│                          # re-validating templates a second way
 └── cli.py                 # `docflow generate ...` / `docflow catalog ...`
 ```
 

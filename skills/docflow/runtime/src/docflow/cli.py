@@ -10,7 +10,13 @@ from docflow.adapters.batch_input import BatchFileError
 from docflow.application.generation import generate_batch
 from docflow.catalog.bootstrap import init_catalog
 from docflow.catalog.loader import CatalogError, load_catalog
-from docflow.catalog.mutation import CatalogMutationError, ChangeFileError, apply_operations, load_operations
+from docflow.catalog.mutation import (
+    CatalogMutationError,
+    ChangeFileError,
+    apply_operations,
+    import_template,
+    load_operations,
+)
 from docflow.catalog.resolve import resolve_organization, resolve_product, resolve_template
 from docflow.catalog.root import resolve_catalog_root
 from docflow.renderers.xlsx import TemplatePreflightError
@@ -49,6 +55,15 @@ def _build_parser() -> argparse.ArgumentParser:
     apply_ = catalog_sub.add_parser("apply", help="Apply explicit, user-confirmed catalog mutations")
     apply_.add_argument("--catalog-root", type=Path, default=None)
     apply_.add_argument("--input", required=True, type=Path, help="change.json: a JSON array of operations")
+
+    import_template_p = catalog_sub.add_parser(
+        "import-template", help="Register a template as a workspace-managed asset (the only way to register one)"
+    )
+    import_template_p.add_argument("--catalog-root", type=Path, default=None)
+    import_template_p.add_argument("--key", required=True, help="e.g. procurement_contract, delivery_note")
+    import_template_p.add_argument("--document-type", required=True, help="e.g. procurement.contract.v1")
+    import_template_p.add_argument("--source", required=True, type=Path, help="External template xlsx to import")
+    import_template_p.add_argument("--replace", action="store_true", help="Overwrite an existing entry for --key")
 
     return parser
 
@@ -121,7 +136,7 @@ def _handle_catalog(args: argparse.Namespace) -> int:
         elif args.kind == "product":
             result = resolve_product(catalog, args.query)
         else:
-            result = resolve_template(catalog, args.query)
+            result = resolve_template(catalog, args.query, catalog_root=root)
 
         print(json.dumps(result, ensure_ascii=False))
         return _RESOLVE_EXIT_CODES[result["status"]]
@@ -136,6 +151,27 @@ def _handle_catalog(args: argparse.Namespace) -> int:
             print("No changes were written.", file=sys.stderr)
             return 2
         print(f"catalog at {root} updated")
+        return 0
+
+    if args.catalog_command == "import-template":
+        try:
+            import_template(
+                catalog_root=root,
+                key=args.key,
+                document_type=args.document_type,
+                source=args.source,
+                replace=args.replace,
+            )
+        except TemplatePreflightError as exc:
+            print(f"TEMPLATE IMPORT REJECTED [{exc.code}]: {exc}", file=sys.stderr)
+            print("No changes were written.", file=sys.stderr)
+            return 2
+        except (CatalogMutationError, CatalogError) as exc:
+            code = getattr(exc, "code", "TEMPLATE_IMPORT_ERROR")
+            print(f"TEMPLATE IMPORT REJECTED [{code}]: {exc}", file=sys.stderr)
+            print("No changes were written.", file=sys.stderr)
+            return 2
+        print(f"template {args.key!r} imported into {root}")
         return 0
 
     return 1
