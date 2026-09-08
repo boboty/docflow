@@ -5,6 +5,21 @@ letters. It carries no business logic and no document facts. Template
 mapping is hand-authored per template (see templates/mappings/*.yaml) -
 there is no visual template designer and none is planned.
 
+Three mapping sections, all projection-only:
+
+  - `header`: document-identity fields (buyer, seller, contract_no, ...) -
+    a cell's entire text is one formatted placeholder value.
+  - `text`: body cells that are *mostly* static boilerplate but embed a
+    transaction fact inline (e.g. a delivery-deadline clause naming the
+    actual delivery date). Same shape and validation as `header` - a
+    dedicated section instead of overloading `header` because these cells
+    are conceptually contract prose, not document metadata. A cell must
+    never be left holding a template's leftover value from a previous
+    business transaction; if a cell's content depends on this
+    transaction's facts at all, it belongs in `header` or `text`, not in
+    the "static boilerplate we don't touch" bucket.
+  - `items`: the line-item table (start_row/end_row + per-field columns).
+
 Every parsing failure here (bad YAML, wrong types, illegal row numbers,
 malformed cell/column references) is normalized to TemplateDefinitionError
 so callers - specifically renderers.xlsx.preflight - can treat "this
@@ -54,6 +69,7 @@ class TemplateDefinition:
     format: str
     sheet: str
     header: dict[str, str]
+    text: dict[str, str]
     items: ItemsMapping
 
 
@@ -110,27 +126,38 @@ def _parse_items(items_raw: object, path: Path) -> ItemsMapping:
     return ItemsMapping(start_row=start_row, end_row=end_row, columns=columns)
 
 
-def _parse_header(header_raw: object, path: Path) -> dict[str, str]:
-    if header_raw is None:
+def _parse_cell_text_mapping(section_raw: object, section_name: str, path: Path) -> dict[str, str]:
+    """Shared parser for both `header` and `text`: both are just
+    ``{cell_address: format_string}`` - one section for document-identity
+    fields, one for body-text cells that embed a transaction fact inside
+    otherwise-static prose (see `text` in the module docstring). Sharing
+    this parser (and, in renderers.xlsx, the same preflight/render helpers)
+    means a mapping author gets identical validation and identical
+    placeholder semantics in both places, with no separate implementation
+    to keep in sync.
+    """
+    if section_raw is None:
         return {}
-    if not isinstance(header_raw, dict):
-        raise TemplateDefinitionError(f"malformed template mapping {path}: 'header' must be a mapping")
+    if not isinstance(section_raw, dict):
+        raise TemplateDefinitionError(f"malformed template mapping {path}: '{section_name}' must be a mapping")
 
-    header: dict[str, str] = {}
-    for cell_address, template_str in header_raw.items():
+    result: dict[str, str] = {}
+    for cell_address, template_str in section_raw.items():
         if not isinstance(cell_address, str) or not _CELL_ADDRESS_RE.match(cell_address):
-            raise TemplateDefinitionError(f"malformed template mapping {path}: invalid header cell {cell_address!r}")
+            raise TemplateDefinitionError(
+                f"malformed template mapping {path}: invalid {section_name} cell {cell_address!r}"
+            )
         column_letters, row = coordinate_from_string(cell_address)
         if row > MAX_EXCEL_ROW or column_index_from_string(column_letters) > MAX_EXCEL_COLUMN:
             raise TemplateDefinitionError(
-                f"malformed template mapping {path}: header cell {cell_address!r} is outside Excel's grid"
+                f"malformed template mapping {path}: {section_name} cell {cell_address!r} is outside Excel's grid"
             )
         if not isinstance(template_str, str):
             raise TemplateDefinitionError(
-                f"malformed template mapping {path}: header value for {cell_address} must be a string"
+                f"malformed template mapping {path}: {section_name} value for {cell_address} must be a string"
             )
-        header[cell_address] = template_str
-    return header
+        result[cell_address] = template_str
+    return result
 
 
 def load_template_definition(path: Path) -> TemplateDefinition:
@@ -152,7 +179,8 @@ def load_template_definition(path: Path) -> TemplateDefinition:
         id=_require_str(raw, "id", path),
         format=_require_str(raw, "format", path),
         sheet=_require_str(raw, "sheet", path),
-        header=_parse_header(raw.get("header"), path),
+        header=_parse_cell_text_mapping(raw.get("header"), "header", path),
+        text=_parse_cell_text_mapping(raw.get("text"), "text", path),
         items=_parse_items(raw["items"], path),
     )
 

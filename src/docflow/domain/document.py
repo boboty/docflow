@@ -25,6 +25,17 @@ def chinese_date(d: date) -> str:
     return f"{d.year}年{d.month}月{d.day}日"
 
 
+def chinese_month_day(d: date) -> str:
+    """Month/day only, no year - e.g. 2026-09-09 -> "9月9日".
+
+    Pure display formatting of an existing transaction fact (a date
+    already on the FactPack), not a new fact. Used for body-text template
+    cells that reference "the delivery date" without repeating the year
+    (matching the real contract's own clause wording).
+    """
+    return f"{d.month}月{d.day}日"
+
+
 @dataclass(frozen=True, slots=True)
 class DocumentProjection:
     document_type: DocumentType

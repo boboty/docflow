@@ -63,4 +63,25 @@ def test_runtime_is_a_pep723_script_with_no_setuptools_project(tmp_path: Path):
 
     version_file = runtime_dir / "VERSION"
     assert version_file.exists()
-    assert "source_commit" in version_file.read_text(encoding="utf-8")
+    version_text = version_file.read_text(encoding="utf-8")
+    assert "version:" in version_text
+    assert "source_tree_sha256:" in version_text
+    assert "built_at:" in version_text
+    # No git commit SHA: a commit recording a sync is necessarily made
+    # AFTER the sync, so a commit-based VERSION is always one commit
+    # behind the very commit that would make it accurate.
+    assert "source_commit" not in version_text
+
+
+def test_version_digest_matches_a_fresh_hash_of_the_bundled_runtime():
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import build_skill_runtime  # noqa: E402
+
+    runtime_dir = DEST_PACKAGE.parent.parent
+    version_text = (runtime_dir / "VERSION").read_text(encoding="utf-8")
+    recorded_digest = next(
+        line.split(":", 1)[1].strip() for line in version_text.splitlines() if line.startswith("source_tree_sha256:")
+    )
+
+    fresh_digest = build_skill_runtime._source_tree_sha256(DEST_PACKAGE)
+    assert recorded_digest == fresh_digest

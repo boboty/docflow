@@ -293,3 +293,23 @@ def test_skill_doc_no_longer_requires_global_docflow_install():
 def test_skill_doc_states_installed_skill_is_immutable():
     text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
     assert "immutable during task execution" in text
+
+
+# E. Skill policy tests (WorkBuddy round-2 fixes): SKILL.md must state
+# each of these four rules explicitly, not just imply them.
+def test_skill_doc_states_template_is_not_a_catalog_or_data_source():
+    text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "never a Catalog or" in text and "business-data source" in text
+    assert "historical/sample residue" in text or "residue from whichever transaction" in text
+
+
+def test_skill_doc_states_no_agent_arithmetic_validation():
+    text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "arithmetic validation" in text
+    assert "42×49=2058" in text  # the actual reported incident, kept as a concrete negative example
+
+
+def test_skill_doc_states_catalog_mutation_needs_separate_authorization():
+    text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+    assert "own, separate authorization" in text
+    assert "is **not** authorization to save" in text or "not authorization to save" in text

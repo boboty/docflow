@@ -1,3 +1,4 @@
 docflow-skill-runtime
-source_commit: 9fb27cce7aa6aa8eb09129180391d592bf610be2
-built_at: 2026-09-08T06:00:58Z
+version: 0.1.0
+source_tree_sha256: b0e4a9fdff0e107b0b71042549d071179f392b1fe2bcbae733117ab08c65678d
+built_at: 2026-09-08T07:34:53Z

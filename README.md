@@ -16,16 +16,27 @@ business data
   -> generated documents + manifest
 ```
 
-## Using DocFlow from an agent
+## Using DocFlow from an agent (normal usage)
 
-An agent with local shell/filesystem access should follow
-[skills/docflow/SKILL.md](skills/docflow/SKILL.md) rather than calling any
-Python API directly - it documents the input contract, exit-code
-semantics, manifest handling, the `docflow catalog` commands for
-resolving stable supplier/ship-to/product/template facts (see below), and
-(most importantly) the boundary that the agent must never compute an
-authoritative money fact itself or invent a business-data source by
-scanning the filesystem.
+An agent with local shell/filesystem access should install/use this as
+**the `skills/docflow/` Skill**, not the Python source directly. The
+Skill bundles its own runtime (`skills/docflow/runtime/`, a
+[PEP 723](https://peps.python.org/pep-0723/) script executed via
+`uv run` - no `pip install`, no global `docflow`, no knowledge of this
+repo's location required) and a launcher at `skills/docflow/scripts/docflow`.
+Follow [skills/docflow/SKILL.md](skills/docflow/SKILL.md) rather than
+calling any Python API directly - it documents the input contract,
+exit-code semantics, manifest handling, the `docflow catalog` commands
+(see below), and (most importantly) the boundaries that keep an agent
+from computing an authoritative money fact itself, inventing a
+business-data source by scanning the filesystem, or treating a
+template's leftover values from a previous transaction as real data.
+
+Copying `skills/docflow/` anywhere (a different machine, a fresh
+workspace) is sufficient - it has no dependency on this repo at all once
+copied. See `scripts/build_skill_runtime.py` for how that bundle is kept
+in sync with `src/docflow` (the actual source of truth; the Skill runtime
+is a published artifact of it, never hand-edited separately).
 
 ## Reference Catalog
 
@@ -35,14 +46,26 @@ an agent resolve a short name like "众壹" into full details instead of
 asking the user to repeat them every time. It is not a database, not a
 system of record, and never stores transaction facts (price, quantity,
 dates, document numbers) - see `src/docflow/catalog/` and
-`skills/docflow/SKILL.md`. Root is configured via `--catalog-root` or
-`DOCFLOW_CATALOG_ROOT`, never auto-discovered:
+`skills/docflow/SKILL.md`.
+
+**Normal usage needs no configuration at all.** The Catalog root
+resolves, in order:
+
+```text
+explicit --catalog-root  >  DOCFLOW_CATALOG_ROOT  >  $PWD/.docflow/catalog
+```
+
+An agent working in a workspace just runs `catalog init` once (idempotent
+- safe to call whenever unsure whether it's already set up; never
+overwrites existing data) and the rest follows from the current
+directory - `DOCFLOW_CATALOG_ROOT` is an override for advanced/shared
+setups, not something a normal user or agent needs to set:
 
 ```bash
-docflow catalog validate --catalog-root "$DOCFLOW_CATALOG_ROOT"
-docflow catalog resolve --catalog-root "$DOCFLOW_CATALOG_ROOT" \
-  --kind organization --query "众壹" --role ship_to --json
-docflow catalog apply --catalog-root "$DOCFLOW_CATALOG_ROOT" --input change.json
+docflow catalog init
+docflow catalog validate
+docflow catalog resolve --kind organization --query "众壹" --role ship_to --json
+docflow catalog apply --input change.json
 ```
 
 Real Catalog data is never committed; `skills/docflow/examples/catalog/*.example.yaml`
@@ -118,9 +141,14 @@ src/docflow/
 │   ├── money.py          # Decimal money/tax derivation, rounding policy
 │   └── chinese_amount.py # RMB capitalization (人民币大写)
 ├── templates/
-│   ├── definition.py      # TemplateDefinition (cell coordinates only)
+│   ├── definition.py      # TemplateDefinition: header/text/items cell mappings
 │   ├── registry.py        # DocumentType -> TemplateDefinition
 │   └── mappings/*.yaml    # hand-authored mapping config per real template
+│                          # (`text`: body cells that are mostly-static clauses
+│                          #  but embed a transaction fact inline, e.g. a
+│                          #  delivery-deadline sentence - see the mapping
+│                          #  YAML's own comments for why a cell like that is
+│                          #  never left as "static template boilerplate")
 ├── renderers/
 │   └── xlsx.py            # fills a copy of the real template; no business logic
 ├── adapters/
@@ -135,7 +163,11 @@ src/docflow/
 └── cli.py                 # `docflow generate ...` / `docflow catalog ...`
 ```
 
-## Usage
+## Developer usage (this repo, not the bundled Skill)
+
+This is for working on DocFlow itself - running it from source with an
+editable install. An agent should not do this; see "Using DocFlow from an
+agent" above for the normal, zero-install path.
 
 ```bash
 python -m venv .venv && .venv/bin/pip install -e . pytest

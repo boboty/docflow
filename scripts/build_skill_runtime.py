@@ -21,6 +21,7 @@ Usage:
 """
 from __future__ import annotations
 
+import hashlib
 import shutil
 import subprocess
 import sys
@@ -32,6 +33,16 @@ SOURCE_PACKAGE = REPO_ROOT / "src" / "docflow"
 SKILL_RUNTIME_DIR = REPO_ROOT / "skills" / "docflow" / "runtime"
 DEST_PACKAGE = SKILL_RUNTIME_DIR / "src" / "docflow"
 RUN_PY = SKILL_RUNTIME_DIR / "run.py"
+
+# Bump this by hand when the runtime's own execution mechanism changes
+# (e.g. this round's move to PEP 723) - it identifies *how* the runtime
+# runs, not *what* src/docflow contains. What it contains is
+# source_tree_sha256 below, which is what actually answers "does this
+# bundled copy match the current source tree" - a git commit SHA doesn't
+# work for that (syncing writes the runtime, then the commit that records
+# it necessarily happens after, so a commit-based VERSION is always one
+# commit "behind" the very commit that made it accurate).
+RUNTIME_VERSION = "0.1.0"
 
 _IGNORE = shutil.ignore_patterns("__pycache__", "*.pyc", "*.pyo", ".pytest_cache")
 
@@ -77,23 +88,23 @@ if __name__ == "__main__":
 '''
 
 
-def _git(*args: str) -> str | None:
-    try:
-        result = subprocess.run(
-            ["git", *args], cwd=REPO_ROOT, capture_output=True, text=True, timeout=10
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    return result.stdout.strip()
-
-
-def _source_commit_info() -> tuple[str, bool]:
-    commit = _git("rev-parse", "HEAD") or "unknown"
-    status = _git("status", "--porcelain", "--", str(SOURCE_PACKAGE))
-    dirty = bool(status) if status is not None else True  # unknown git state -> assume dirty
-    return commit, dirty
+def _source_tree_sha256(package_dir: Path) -> str:
+    """Deterministic content digest of every file under `package_dir`,
+    independent of git state entirely (no commit SHA, no dirty-tree
+    ambiguity, no "one commit behind" problem). Two directories with this
+    same digest have byte-identical file trees; that's the only claim
+    this makes or needs to make.
+    """
+    hasher = hashlib.sha256()
+    for path in sorted(package_dir.rglob("*")):
+        if not path.is_file() or "__pycache__" in path.parts or path.suffix in (".pyc", ".pyo"):
+            continue
+        relative = path.relative_to(package_dir).as_posix()
+        hasher.update(relative.encode("utf-8"))
+        hasher.update(b"\0")
+        hasher.update(path.read_bytes())
+        hasher.update(b"\0")
+    return hasher.hexdigest()
 
 
 def _remove_obsolete_artifacts() -> None:
@@ -135,11 +146,15 @@ def sync() -> None:
 
     locked = _lock_run_py()
 
-    commit, dirty = _source_commit_info()
+    # Hash the freshly-copied DEST, not SOURCE_PACKAGE: the whole point is
+    # to verify what's actually sitting in the bundled runtime, not to
+    # assert something about src/docflow in isolation.
+    source_tree_sha256 = _source_tree_sha256(DEST_PACKAGE)
     built_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     version_lines = [
         "docflow-skill-runtime",
-        f"source_commit: {commit}{' (dirty: uncommitted changes under src/docflow)' if dirty else ''}",
+        f"version: {RUNTIME_VERSION}",
+        f"source_tree_sha256: {source_tree_sha256}",
         f"built_at: {built_at}",
     ]
     (SKILL_RUNTIME_DIR / "VERSION").write_text("\n".join(version_lines) + "\n", encoding="utf-8")
@@ -148,7 +163,7 @@ def sync() -> None:
     print(f"synced {len(copied_files)} files: {SOURCE_PACKAGE} -> {DEST_PACKAGE}")
     print(f"wrote {RUN_PY} (PEP 723 script, no pyproject.toml/setuptools)")
     print(f"wrote {RUN_PY}.lock" if locked else "run.py.lock NOT regenerated (uv unavailable)")
-    print(f"wrote {SKILL_RUNTIME_DIR / 'VERSION'} (source_commit={commit}, dirty={dirty})")
+    print(f"wrote {SKILL_RUNTIME_DIR / 'VERSION'} (source_tree_sha256={source_tree_sha256[:12]}...)")
 
 
 if __name__ == "__main__":

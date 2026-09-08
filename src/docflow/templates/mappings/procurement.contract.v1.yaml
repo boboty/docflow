@@ -3,9 +3,16 @@
 # (merged cells, item table at rows 9-26, subtotal formulas at row 27,
 # RMB-capital line at row 28). The template file itself is never committed.
 #
-# Clause paragraphs (质量要求 / 交货地点 / 运输方式 / 违约责任 / 结算方式 /
-# 争议解决, rows 30-46) are static template boilerplate for phase 1 and are
-# intentionally NOT overwritten by the engine.
+# Most clause paragraphs (质量要求 / 交货地点 / 运输方式 / 结算方式 / 争议解决)
+# are genuinely static template boilerplate and are intentionally NOT
+# overwritten. Row 40 (违约责任) is NOT purely static, though - it embeds
+# the delivery deadline date inline ("6月9日前分批次完成发货……"). A real
+# generation run against a real 18-line sample proved that leaving it
+# alone lets a PREVIOUS transaction's delivery date leak into a new
+# document. Any cell whose content depends on this transaction's facts at
+# all - even a single date inside otherwise-static prose - must be listed
+# below (in `text`, not silently left as "static"), so the renderer always
+# overwrites it.
 id: procurement.contract.v1
 format: xlsx
 sheet: 采购合同
@@ -19,6 +26,9 @@ header:
   F48: "销方：{seller}"
   A49: "时间：{contract_date}"
   F49: "时间：{contract_date}"
+
+text:
+  A40: "{delivery_month_day}前分批次完成发货，每逾期1日，乙方按合同总金额的3%支付违约金；逾期超过7日，甲方有权解除合同并要求赔偿损失。"
 
 items:
   start_row: 9

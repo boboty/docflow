@@ -79,7 +79,12 @@ def build_contract_template(path: Path) -> Path:
         (36, "四、运输方式和运费负担："),
         (37, "货物由销方运到购方指定地点，采购单价包含运费。"),
         (39, "五、违约责任："),
-        (40, "逾期交货按合同约定支付违约金。"),
+        # Mirrors the real template bug this fixture exists to regression-test:
+        # row 40 is NOT purely static - it embeds a delivery-deadline date left
+        # over from whichever transaction last used this physical template file.
+        # A correct mapping/renderer must overwrite it with THIS transaction's
+        # delivery date, never leave a previous one in place.
+        (40, "6月9日前分批次完成发货，每逾期1日，乙方按合同总金额的3%支付违约金；逾期超过7日，甲方有权解除合同并要求赔偿损失。"),
         (42, "六、结算方式及期限："),
         (43, "全款，发货前结清。"),
         (45, "七、争议解决："),

@@ -1,10 +1,21 @@
 """XLSX renderer: fills a copy of a real template from a DocumentProjection.
 
 The renderer performs no business calculation. It only:
-  - substitutes header text placeholders,
+  - substitutes header text placeholders (document-identity cells),
+  - substitutes body-text placeholders (mostly-static clauses that embed
+    a transaction fact, e.g. a delivery-deadline sentence naming the
+    actual delivery date),
   - writes already-derived item values into fixed template rows,
   - clears leftover sample rows when fewer items than template capacity,
   - fails explicitly when items exceed template capacity.
+
+A template cell must never be left holding a *previous* business
+transaction's value: if a cell's content depends on this transaction's
+facts at all - even a single date embedded inside an otherwise-static
+paragraph - it must be listed in the mapping's `header` or `text` section
+so this renderer overwrites it. "Static template boilerplate we don't
+touch" only covers cells whose content is genuinely transaction
+-independent (legal clause headings, fixed disclaimer wording, etc).
 
 Every written amount is a value already decided upstream (rules.money) -
 this renderer never writes a per-row formula that could recompute a
@@ -22,20 +33,21 @@ import openpyxl
 from openpyxl.utils.cell import coordinate_to_tuple
 from openpyxl.workbook.properties import CalcProperties
 
-from docflow.domain.document import DocumentProjection, chinese_date
+from docflow.domain.document import DocumentProjection, chinese_date, chinese_month_day
 from docflow.rules.money import LineItemAmounts
 from docflow.templates.definition import TemplateDefinition
 
 TEMPLATE_ITEM_CAPACITY_EXCEEDED = "TEMPLATE_ITEM_CAPACITY_EXCEEDED"
 
-# Single source of truth for header placeholder names, shared between the
-# actual renderer (_header_context) and preflight (which must reject a
-# mapping referencing an unknown placeholder *before* any record is
-# processed, rather than let it surface as a KeyError mid-batch).
-_HEADER_CONTEXT_KEYS = (
+# Single source of truth for the placeholder names available to BOTH
+# `header` and `text` mapping cells - shared between the actual renderer
+# (_cell_text_context) and preflight (which must reject a mapping
+# referencing an unknown placeholder *before* any record is processed,
+# rather than let it surface as a KeyError mid-batch).
+_CELL_TEXT_CONTEXT_KEYS = (
     "buyer", "seller", "contract_no", "delivery_no", "contract_date", "delivery_date",
-    "amount_in_words", "ship_to_company", "ship_to_contact", "ship_to_phone", "ship_to_address",
-    "seller_contact", "seller_phone", "seller_address",
+    "delivery_month_day", "amount_in_words", "ship_to_company", "ship_to_contact",
+    "ship_to_phone", "ship_to_address", "seller_contact", "seller_phone", "seller_address",
 )
 
 # Field names a mapping's items.columns may legally reference: every
@@ -78,6 +90,28 @@ def _is_non_writable_merged_cell(ws, cell_address: str) -> bool:
     return False
 
 
+def _preflight_cell_text_mapping(ws, mapping: dict[str, str], section_name: str, dummy_context: dict[str, str]) -> None:
+    """Shared preflight check for both `header` and `text`: every
+    placeholder must be satisfiable and every target cell must be
+    writable. Used identically for both sections so a mapping author gets
+    the same guarantees regardless of which one a cell lives in.
+    """
+    for cell_address, template_str in mapping.items():
+        try:
+            template_str.format(**dummy_context)
+        except (KeyError, IndexError, ValueError) as exc:
+            raise TemplatePreflightError(
+                "TEMPLATE_MAPPING_INVALID",
+                f"{section_name} template for {cell_address} is invalid: {exc}",
+            ) from exc
+        if _is_non_writable_merged_cell(ws, cell_address):
+            raise TemplatePreflightError(
+                "TEMPLATE_MAPPING_INVALID",
+                f"{section_name} cell {cell_address} is inside a merged range but is not its "
+                f"top-left cell, so it cannot be written to",
+            )
+
+
 def preflight(definition: TemplateDefinition, template_path: Path) -> None:
     """Verify a template file AND mapping are usable before any record is
     processed. This must catch everything render() could later choke on
@@ -110,21 +144,9 @@ def preflight(definition: TemplateDefinition, template_path: Path) -> None:
         )
     ws = wb[definition.sheet]
 
-    dummy_context = {key: "" for key in _HEADER_CONTEXT_KEYS}
-    for cell_address, template_str in definition.header.items():
-        try:
-            template_str.format(**dummy_context)
-        except (KeyError, IndexError, ValueError) as exc:
-            raise TemplatePreflightError(
-                "TEMPLATE_MAPPING_INVALID",
-                f"header template for {cell_address} is invalid: {exc}",
-            ) from exc
-        if _is_non_writable_merged_cell(ws, cell_address):
-            raise TemplatePreflightError(
-                "TEMPLATE_MAPPING_INVALID",
-                f"header cell {cell_address} is inside a merged range but is not its "
-                f"top-left cell, so it cannot be written to",
-            )
+    dummy_context = {key: "" for key in _CELL_TEXT_CONTEXT_KEYS}
+    _preflight_cell_text_mapping(ws, definition.header, "header", dummy_context)
+    _preflight_cell_text_mapping(ws, definition.text, "text", dummy_context)
 
     unknown_fields = set(definition.items.columns) - _VALID_ITEM_FIELDS
     if unknown_fields:
@@ -144,7 +166,7 @@ def preflight(definition: TemplateDefinition, template_path: Path) -> None:
                 )
 
 
-def _header_context(projection: DocumentProjection) -> dict[str, str]:
+def _cell_text_context(projection: DocumentProjection) -> dict[str, str]:
     return {
         "buyer": projection.buyer,
         "seller": projection.seller,
@@ -152,6 +174,7 @@ def _header_context(projection: DocumentProjection) -> dict[str, str]:
         "delivery_no": projection.delivery_no,
         "contract_date": chinese_date(projection.contract_date),
         "delivery_date": chinese_date(projection.delivery_date),
+        "delivery_month_day": chinese_month_day(projection.delivery_date),
         "amount_in_words": projection.amount_in_words,
         "ship_to_company": projection.ship_to.company,
         "ship_to_contact": projection.ship_to.contact,
@@ -201,9 +224,11 @@ def render(
     wb = openpyxl.load_workbook(source_template_path)
     ws = wb[definition.sheet]
 
-    header_context = _header_context(projection)
+    context = _cell_text_context(projection)
     for cell_address, template_str in definition.header.items():
-        ws[cell_address] = template_str.format(**header_context)
+        ws[cell_address] = template_str.format(**context)
+    for cell_address, template_str in definition.text.items():
+        ws[cell_address] = template_str.format(**context)
 
     columns = definition.items.columns
     start_row = definition.items.start_row

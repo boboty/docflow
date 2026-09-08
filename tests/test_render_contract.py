@@ -1,3 +1,5 @@
+from dataclasses import replace
+from datetime import date
 from pathlib import Path
 
 import openpyxl
@@ -64,6 +66,27 @@ def test_at_capacity_exact_fills_all_rows(contract_template_path: Path, tmp_path
     last_item = projection.items[-1]
     assert ws["A26"].value == last_item.sku
     assert ws["A9"].value == projection.items[0].sku
+
+
+def test_body_text_overwrites_previous_transactions_delivery_date(contract_template_path: Path, tmp_path: Path):
+    """A40 regression: the synthetic template's row 40 pre-seeds a stale
+    delivery-deadline clause ("6月9日前...") mirroring a real transaction
+    that leaked into a real generated contract. This transaction's own
+    delivery_date must fully replace it - the old date must not survive
+    anywhere in the cell.
+    """
+    pack = replace(make_fact_pack(item_count=1), delivery_date=date(2026, 9, 9))
+    projection = build_projection(pack, DocumentType.PROCUREMENT_CONTRACT_V1)
+    output_path = tmp_path / "out.xlsx"
+
+    render(_definition(), contract_template_path, projection, output_path)
+
+    wb = openpyxl.load_workbook(output_path)
+    ws = wb["采购合同"]
+    a40 = ws["A40"].value
+    assert "9月9日前" in a40
+    assert "6月9日前" not in a40
+    assert "6月9日" not in a40
 
 
 def test_over_capacity_raises_explicit_error(contract_template_path: Path, tmp_path: Path):

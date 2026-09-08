@@ -92,6 +92,78 @@ def test_preflight_rejects_malformed_format_string(contract_template_path: Path)
     assert exc_info.value.code == "TEMPLATE_MAPPING_INVALID"
 
 
+def test_preflight_rejects_unknown_text_placeholder(contract_template_path: Path):
+    definition = TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1)
+    bad_text = dict(definition.text)
+    bad_text["A40"] = "{unknown_fact}前发货"
+    broken_definition = replace(definition, text=bad_text)
+
+    with pytest.raises(TemplatePreflightError) as exc_info:
+        preflight(broken_definition, contract_template_path)
+    assert exc_info.value.code == "TEMPLATE_MAPPING_INVALID"
+
+
+def test_preflight_rejects_text_cell_inside_non_anchor_merged_range(contract_template_path: Path):
+    """B40 sits inside the synthetic/real template's A40:I40 merge but is
+    not its top-left anchor.
+    """
+    definition = TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1)
+    bad_text = dict(definition.text)
+    bad_text["B40"] = "{delivery_month_day}前发货"
+    broken_definition = replace(definition, text=bad_text)
+
+    with pytest.raises(TemplatePreflightError) as exc_info:
+        preflight(broken_definition, contract_template_path)
+    assert exc_info.value.code == "TEMPLATE_MAPPING_INVALID"
+
+
+def test_preflight_rejects_malformed_text_format_string(contract_template_path: Path):
+    definition = TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1)
+    bad_text = dict(definition.text)
+    bad_text["A40"] = "{delivery_month_day前发货"  # unmatched brace
+    broken_definition = replace(definition, text=bad_text)
+
+    with pytest.raises(TemplatePreflightError) as exc_info:
+        preflight(broken_definition, contract_template_path)
+    assert exc_info.value.code == "TEMPLATE_MAPPING_INVALID"
+
+
+def test_load_template_definition_rejects_text_cell_beyond_excel_limit(tmp_path: Path):
+    bad_mapping = tmp_path / "bad.yaml"
+    bad_mapping.write_text(
+        "id: x\nformat: xlsx\nsheet: Sheet1\n"
+        "text:\n  A1048577: \"{delivery_month_day}\"\n"
+        "items:\n  start_row: 1\n  end_row: 5\n  columns:\n    sku: A\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TemplateDefinitionError):
+        load_template_definition(bad_mapping)
+
+
+def test_load_template_definition_rejects_invalid_text_cell_address(tmp_path: Path):
+    bad_mapping = tmp_path / "bad.yaml"
+    bad_mapping.write_text(
+        "id: x\nformat: xlsx\nsheet: Sheet1\n"
+        "text:\n  \"not-a-cell\": \"{delivery_month_day}\"\n"
+        "items:\n  start_row: 1\n  end_row: 5\n  columns:\n    sku: A\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TemplateDefinitionError):
+        load_template_definition(bad_mapping)
+
+
+def test_load_template_definition_rejects_non_mapping_text_section(tmp_path: Path):
+    bad_mapping = tmp_path / "bad.yaml"
+    bad_mapping.write_text(
+        "id: x\nformat: xlsx\nsheet: Sheet1\n"
+        "text: not-a-mapping\n"
+        "items:\n  start_row: 1\n  end_row: 5\n  columns:\n    sku: A\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TemplateDefinitionError):
+        load_template_definition(bad_mapping)
+
+
 def test_load_template_definition_rejects_row_beyond_excel_limit(tmp_path: Path):
     bad_mapping = tmp_path / "bad.yaml"
     bad_mapping.write_text(

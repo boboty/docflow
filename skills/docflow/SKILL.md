@@ -82,14 +82,21 @@ runtime, corrupted files), report it - don't try to patch, regenerate, or
 
 ## STOP CONDITIONS - read this before anything else
 
-An earlier run of this skill went wrong exactly here: the user said "I
-have a batch of procurement data, generate the documents" without
-providing the data or a template path, and the agent found
+Two earlier runs of this skill went wrong. First: the user said "I have a
+batch of procurement data, generate the documents" without providing the
+data or a template path, and the agent found
 `local/golden_batch.local.json` in the repository, treated it as this
 task's business data, searched iCloud for a template, guessed one by
-filename, and ran DocFlow. Every one of those steps was wrong. The three
-rules below exist specifically to prevent that class of mistake, and they
-override everything else in this document.
+filename, and ran DocFlow. Second, in a later run where Catalog lookups
+came back `NOT_FOUND`: the agent read a *previous transaction's* values
+still sitting in the real template file (company name, contact, phone,
+address, SKUs) and told the user "I noticed what might be a match in the
+template, confirm if that's right?" - and separately, when reporting a
+generated batch, the agent did its own arithmetic on the amounts
+("42×49=2058, total 2744, consistent") before DocFlow had validated
+anything. Every one of these was wrong. The five rules below exist
+specifically to prevent this class of mistake, and they override
+everything else in this document.
 
 **Rule 1 - no data, no run.** If the user has not provided or explicitly
 named this task's business data in the current conversation, do not run
@@ -122,7 +129,54 @@ and ask before treating it as this task's input.
 in the Catalog. Do not widen the search, check other directories, or
 infer an answer from context. Tell the user it's not registered and ask
 them to provide it (optionally offering to save it to the Catalog once
-they confirm - see "Accumulating the Catalog" below).
+they confirm - see "Catalog persistence needs its own, separate authorization" below).
+
+**Rule 4 - a template is a projection/layout source, never a Catalog or
+business-data source.** A real template file defines document structure
+and approved static boilerplate. Any value already sitting inside it -
+company names, contacts, phone numbers, addresses, SKUs, product names,
+dates, document numbers, amounts, old remarks - is **historical/sample
+residue from whichever transaction last used that physical file**, full
+stop, regardless of how well it happens to match something the user is
+currently talking about. When the user hands you a template (to register
+its path, or because you're using it to render), that is the full extent
+of what they authorized. You must never:
+
+  - use a value read from inside a template as this transaction's fact;
+  - use it as this transaction's fact even when a Catalog lookup came
+    back `NOT_FOUND` for the same name (Rule 3 already covers this, but
+    it bears repeating here: `NOT_FOUND` is not license to go read the
+    template instead);
+  - present it to the user as a candidate ("I noticed what might be a
+    match in the template, confirm if that's right?") - this is still
+    using it, just with an extra step;
+  - write it to the Catalog, with or without asking;
+  - let it influence a `DocumentFactPack` in any way.
+
+This holds even if the user's own short name happens to look like a
+perfect match for something the template contains. The only way template
+content becomes usable data is a separate, explicit instruction to treat
+the template as a data source - e.g. "请从这份文件中提取基础资料" ("please
+extract reference data from this file"). That is a distinct task from
+generating documents, and it still ends with the normal
+explicit-confirmation-before-`catalog apply` step (Rule 5 below and
+"Catalog persistence needs its own, separate authorization").
+
+**Rule 5 - do not perform or report arithmetic validation of
+authoritative money facts.** You receive `quantity`, `gross_unit_price`,
+`gross_amount`, `gross_total`, map them into the batch JSON, and hand them
+to DocFlow. That is the entire extent of your involvement with the
+numbers. Do not multiply, sum, or otherwise "sanity check" them yourself,
+and do not report that you did - not "42×49=2058, total 2744, 自洽",
+not any restatement of that reasoning in softer words. The correct thing
+to say is that the figures were received and handed to DocFlow; only
+after reading a manifest entry (or a validation error) may you say
+DocFlow validated them - "DocFlow 校验通过" once `validation_status` is
+actually `PASS`, or a specific issue code once it's `FAILED`. Performing
+the arithmetic yourself and reporting "自洽"/"correct" before that is
+exactly the kind of engine-duplicate-in-the-prompt this skill exists to
+avoid (see "What this skill must never do") - it doesn't matter that the
+arithmetic happens to be correct.
 
 ## When to use this skill
 
@@ -342,7 +396,7 @@ error state - ask once:
 > 保存到当前工作区，以后无需重复提供。
 
 If the user confirms saving, register both with `catalog apply` (see
-"Accumulating the Catalog"):
+"Catalog persistence needs its own, separate authorization"):
 
 ```bash
 cat > change.json << 'EOF'
@@ -567,10 +621,23 @@ one-line reason - nothing more from the internals.
 错误：TEMPLATE_FILE_MISSING - template file not found: /path/to/template.xlsx
 ```
 
-## Accumulating the Catalog
+## Catalog persistence needs its own, separate authorization
 
 The Catalog grows only through explicit user confirmation - never
-silently, never automatically. Two shapes this takes:
+silently, never automatically, and never inferred from an adjacent action
+that merely *looks* like permission. In particular:
+
+  - the user handing you a template file (to register its path, or to
+    render against) is **not** authorization to save anything to the
+    Catalog - not the template path, and certainly not any value read
+    from inside it (see Rule 4 above);
+  - the user supplying a company/contact/address/product for *this*
+    transaction is **not** default permission to persist it permanently -
+    "this time" and "from now on, save this" are two different
+    instructions, and only the second one triggers `catalog apply`.
+
+Only an explicit instruction like 保存 / 登记 / 以后默认用 / 记下来 / 加入
+Catalog authorizes a write. Two shapes this takes:
 
 1. **User volunteers a save.** "众壹新增一个宁波仓，地址 XXX，以后保存起来。"
    → build the operation and apply it now.
@@ -666,3 +733,34 @@ XXX" and 宁波仓 isn't in the Catalog. Use the user-supplied address for
 gave you). After the documents are generated, ask: "众壹的'宁波仓'还没在
 基础资料里，要保存下来以后直接用吗？" Only call `catalog apply` if they
 confirm. Next time, "众壹宁波仓" resolves directly.
+
+**J - an obvious placeholder in the user's data, correctly left alone.**
+The user's file has `ship_to.address: "浙江省金华市……【这里填真实地址】"`.
+This is a template placeholder marker the user hasn't filled in, not a
+real address. Do not treat it as real, do not silently invent a real
+address, do not save it to the Catalog, and do not try to "look it up"
+anywhere. Just ask the user for the actual address for this shipment.
+Recognizing an obvious placeholder like this is an agent-level judgment
+call (「【...】」, "TBD", "XXX", "待填写" and similar) - it does not need
+(and this round deliberately does not add) any placeholder-detection
+logic in the Engine or Catalog.
+
+**K - a template with old data in it, and Catalog lookups come back
+`NOT_FOUND`.** You open (or render against) a real template and it still
+has a previous customer's company name, contact, phone, and SKUs sitting
+in header/body cells - completely normal, since a real xlsx file remembers
+whatever was last typed into it. Rule 4 applies in full even here: do not
+read those values, do not mention them to the user as possible matches,
+do not save them to the Catalog, and do not let a Catalog `NOT_FOUND`
+change that. Simply tell the user the name isn't registered and ask them
+to provide it, exactly as Rule 3 already says.
+
+**L - reporting a passed batch without doing the arithmetic yourself.**
+A batch generates successfully: two line items, `42×49=2058` and
+`14×49=686`, `gross_total=2744`. Do not say "42×49=2058，686+2058=2744，
+金额自洽" or anything equivalent - that's you validating money facts, which
+Rule 5 reserves for the Engine. Read the manifest, confirm every entry's
+`validation_status` is `PASS`, and report: "已收到含税单价、含税金额和总额，
+DocFlow 校验通过，已生成 N 份文档" (or the "All PASS" template under
+"Reporting results to the user"). The numbers being correct doesn't change
+this - the point is that DocFlow said so, not that you re-derived it.
