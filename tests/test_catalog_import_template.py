@@ -13,7 +13,9 @@ from pathlib import Path
 import openpyxl
 import pytest
 
+from docflow import cli
 from docflow.catalog.loader import load_catalog
+from docflow.catalog import mutation
 from docflow.catalog.mutation import CatalogMutationError, import_template
 from docflow.catalog.resolve import resolve_template
 from docflow.catalog.root import managed_template_root
@@ -21,6 +23,7 @@ from docflow.renderers.xlsx import TemplatePreflightError
 from tests.fixtures.synthetic_templates import build_contract_template, build_delivery_template
 
 CONTRACT_DOC_TYPE = "procurement.contract.v1"
+DELIVERY_DOC_TYPE = "delivery.note.v1"
 
 
 def _catalog_root(tmp_path: Path) -> Path:
@@ -229,9 +232,94 @@ templates:
 def test_delivery_note_import_uses_its_own_canonical_filename(tmp_path: Path):
     catalog_root = _catalog_root(tmp_path)
     source = build_delivery_template(tmp_path / "送货单_FBA20260620009.xlsx")
-    import_template(catalog_root, "delivery_note", "delivery.note.v1", source, replace=False)
+    import_template(catalog_root, "delivery_note", DELIVERY_DOC_TYPE, source, replace=False)
 
     managed_file = managed_template_root(catalog_root) / "delivery_note.xlsx"
     assert managed_file.exists()
     catalog = load_catalog(catalog_root)
     assert catalog.templates["delivery_note"].path == "../templates/delivery_note.xlsx"
+
+
+@pytest.mark.parametrize("key", ["../../evil", "foo/bar", "unknown"])
+def test_import_rejects_noncanonical_template_key_before_creating_managed_paths(tmp_path: Path, key: str):
+    catalog_root = _catalog_root(tmp_path)
+    source = build_contract_template(tmp_path / "external.xlsx")
+
+    with pytest.raises(CatalogMutationError) as exc_info:
+        import_template(catalog_root, key, CONTRACT_DOC_TYPE, source, replace=False)
+
+    assert exc_info.value.code == "UNSUPPORTED_TEMPLATE_KEY"
+    assert not catalog_root.exists()
+    assert not managed_template_root(catalog_root).exists()
+
+
+def test_import_rejects_canonical_key_document_type_mismatch(tmp_path: Path):
+    catalog_root = _catalog_root(tmp_path)
+    source = build_contract_template(tmp_path / "external.xlsx")
+
+    with pytest.raises(CatalogMutationError) as exc_info:
+        import_template(catalog_root, "delivery_note", CONTRACT_DOC_TYPE, source, replace=False)
+
+    assert exc_info.value.code == "TEMPLATE_IDENTITY_MISMATCH"
+    assert not managed_template_root(catalog_root).exists()
+
+
+def _force_yaml_failure(*args, **kwargs):
+    raise OSError("forced templates.yaml failure")
+
+
+def _assert_no_transaction_artifacts(catalog_root: Path) -> None:
+    if catalog_root.exists():
+        assert not list(catalog_root.rglob("*.tmp"))
+        assert not list(catalog_root.rglob("*.bak"))
+
+
+def test_fresh_import_rolls_back_managed_file_when_yaml_write_fails(tmp_path: Path, monkeypatch, capsys):
+    catalog_root = _catalog_root(tmp_path)
+    source = build_contract_template(tmp_path / "external.xlsx")
+    catalog_path = catalog_root / "templates.yaml"
+    catalog_root.mkdir(parents=True)
+    original_catalog = b"templates: {}\n"
+    catalog_path.write_bytes(original_catalog)
+    monkeypatch.setattr(mutation, "_write_yaml_atomic", _force_yaml_failure)
+
+    result = cli.main([
+        "catalog", "import-template", "--catalog-root", str(catalog_root),
+        "--key", "procurement_contract", "--document-type", CONTRACT_DOC_TYPE,
+        "--source", str(source),
+    ])
+
+    assert result == 2
+    assert "TEMPLATE IMPORT REJECTED" in capsys.readouterr().err
+    assert not (managed_template_root(catalog_root) / "procurement_contract.xlsx").exists()
+    assert catalog_path.read_bytes() == original_catalog
+    _assert_no_transaction_artifacts(catalog_root)
+
+
+def test_replace_rolls_back_old_managed_bytes_when_yaml_write_fails(tmp_path: Path, monkeypatch, capsys):
+    catalog_root = _catalog_root(tmp_path)
+    first_source = build_contract_template(tmp_path / "first.xlsx")
+    import_template(catalog_root, "procurement_contract", CONTRACT_DOC_TYPE, first_source, replace=False)
+    managed_file = managed_template_root(catalog_root) / "procurement_contract.xlsx"
+    catalog_path = catalog_root / "templates.yaml"
+    original_managed = managed_file.read_bytes()
+    original_catalog = catalog_path.read_bytes()
+
+    second_source = build_contract_template(tmp_path / "second.xlsx")
+    workbook = openpyxl.load_workbook(second_source)
+    workbook["采购合同"]["A1"] = "replacement"
+    workbook.save(second_source)
+    assert second_source.read_bytes() != original_managed
+    monkeypatch.setattr(mutation, "_write_yaml_atomic", _force_yaml_failure)
+
+    result = cli.main([
+        "catalog", "import-template", "--catalog-root", str(catalog_root),
+        "--key", "procurement_contract", "--document-type", CONTRACT_DOC_TYPE,
+        "--source", str(second_source), "--replace",
+    ])
+
+    assert result == 2
+    assert "TEMPLATE IMPORT REJECTED" in capsys.readouterr().err
+    assert managed_file.read_bytes() == original_managed
+    assert catalog_path.read_bytes() == original_catalog
+    _assert_no_transaction_artifacts(catalog_root)

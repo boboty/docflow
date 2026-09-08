@@ -47,6 +47,11 @@ _KNOWN_OPERATIONS = {
     "upsert_product",
 }
 
+MANAGED_TEMPLATE_TYPES = {
+    "procurement_contract": DocumentType.PROCUREMENT_CONTRACT_V1,
+    "delivery_note": DocumentType.DELIVERY_NOTE_V1,
+}
+
 
 class CatalogMutationError(Exception):
     def __init__(self, code: str, message: str):
@@ -183,12 +188,18 @@ def import_template(catalog_root: Path, key: str, document_type: str, source: Pa
     """The only sanctioned way to register a template (see module
     docstring). Order matters for failure safety (Managed Template
     Lifecycle section 7): every validation that can fail happens before
-    any filesystem mutation; the managed binary asset is committed (via
-    rename) before the catalog YAML is written, so the catalog can never
-    end up pointing at a managed file that doesn't exist - the reverse
-    (file written, catalog not yet updated) is the only possible
-    inconsistency, and a retry from that state is always safe.
+    any filesystem mutation. The managed binary is committed before the
+    catalog YAML, with the prior binary and YAML bytes retained until the
+    final reload succeeds so any later failure can restore both resources.
     """
+    canonical_doc_type = MANAGED_TEMPLATE_TYPES.get(key)
+    if canonical_doc_type is None:
+        raise CatalogMutationError(
+            "UNSUPPORTED_TEMPLATE_KEY",
+            f"{key!r} is not a supported template key "
+            f"(expected one of: {list(MANAGED_TEMPLATE_TYPES)})",
+        )
+
     try:
         doc_type = DocumentType(document_type)
     except ValueError as exc:
@@ -197,6 +208,13 @@ def import_template(catalog_root: Path, key: str, document_type: str, source: Pa
             f"{document_type!r} is not a supported document type "
             f"(expected one of: {[d.value for d in DocumentType]})",
         ) from exc
+
+    if doc_type is not canonical_doc_type:
+        raise CatalogMutationError(
+            "TEMPLATE_IDENTITY_MISMATCH",
+            f"template key {key!r} requires document type {canonical_doc_type.value!r}, "
+            f"not {document_type!r}",
+        )
 
     registry = TemplateRegistry()
     try:
@@ -220,30 +238,66 @@ def import_template(catalog_root: Path, key: str, document_type: str, source: Pa
             f"template {key!r} is already registered - pass --replace to overwrite it",
         )
 
+    # `key` has already been resolved through MANAGED_TEMPLATE_TYPES. It
+    # is the canonical identity, not user input to slugify or sanitize.
     filename = f"{key}.xlsx"
     managed_dir = managed_template_root(catalog_root)
     managed_dir.mkdir(parents=True, exist_ok=True)
     final_path = managed_dir / filename
     tmp_path = managed_dir / f".{filename}.tmp"
+    backup_path = managed_dir / f".{filename}.bak"
     # Relative to catalog_root (managed_template_root is always its fixed
     # sibling "templates" dir) - so a moved/copied workspace keeps working
     # without rewriting the Catalog. See resolve.resolve_template_path.
     relative_path = f"../templates/{filename}"
 
     candidate_templates_raw = dict(templates_raw)
-    candidate_templates_raw[key] = {"document_type": document_type, "path": relative_path}
+    candidate_templates_raw[key] = {"document_type": canonical_doc_type.value, "path": relative_path}
 
     # Validate the candidate catalog state BEFORE committing anything.
     parse_catalog_dict(organizations_raw, products_raw, candidate_templates_raw)
 
+    catalog_path = catalog_root / "templates.yaml"
+    catalog_existed = catalog_path.exists()
+    catalog_bytes = catalog_path.read_bytes() if catalog_existed else None
+    managed_existed = final_path.exists()
+    backup_ready = False
+    final_replaced = False
+
     try:
         shutil.copyfile(source, tmp_path)
+        if managed_existed:
+            shutil.copyfile(final_path, backup_path)
+            backup_ready = True
         tmp_path.replace(final_path)
-    except Exception:
+        final_replaced = True
+        _write_yaml_atomic(catalog_path, "templates", candidate_templates_raw)
+        load_catalog(catalog_root)
+    except Exception as exc:
+        # Restore both observable resources to their exact pre-call state.
+        # This deliberately does not call the injectable YAML writer: that
+        # is the component whose failure may have triggered compensation.
+        if final_replaced and managed_existed and backup_ready:
+            backup_path.replace(final_path)
+        elif final_replaced and not managed_existed and final_path.exists():
+            final_path.unlink()
+
+        yaml_tmp_path = catalog_path.with_name(catalog_path.name + ".tmp")
+        if catalog_existed:
+            rollback_path = catalog_path.with_name(catalog_path.name + ".rollback.tmp")
+            try:
+                rollback_path.write_bytes(catalog_bytes or b"")
+                rollback_path.replace(catalog_path)
+            finally:
+                if rollback_path.exists():
+                    rollback_path.unlink()
+        elif catalog_path.exists():
+            catalog_path.unlink()
+        if yaml_tmp_path.exists():
+            yaml_tmp_path.unlink()
+        raise CatalogMutationError("TEMPLATE_IMPORT_FAILED", f"template import could not be committed: {exc}") from exc
+    finally:
         if tmp_path.exists():
             tmp_path.unlink()
-        raise
-
-    _write_yaml_atomic(catalog_root / "templates.yaml", "templates", candidate_templates_raw)
-
-    load_catalog(catalog_root)
+        if backup_path.exists():
+            backup_path.unlink()
