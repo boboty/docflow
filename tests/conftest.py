@@ -9,8 +9,8 @@ import pytest
 from docflow.domain.facts import DocumentFactPack, LineItemFacts, ShipTo
 from tests.fixtures.synthetic_templates import build_contract_template, build_delivery_template
 
-CONTRACT_CAPACITY = 18
-DELIVERY_CAPACITY = 18
+CONTRACT_CAPACITY = 12
+DELIVERY_CAPACITY = 12
 
 
 @pytest.fixture

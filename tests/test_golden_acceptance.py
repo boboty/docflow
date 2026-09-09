@@ -111,20 +111,26 @@ def test_real_18_line_sample_matches_golden_totals(tmp_path):
     # just the in-memory projection the renderer was given. This is what
     # would have caught the P0 "delivery recomputes D*F" bug, where the
     # projection-level totals matched but the rendered file did not.
-    contract_ws = openpyxl.load_workbook(contract_path)["采购合同"]
-    delivery_ws = openpyxl.load_workbook(delivery_path)["送货单"]
+    #
+    # Coordinates below match the real (Template Migration) mapping:
+    # sheet "Sheet1", contract items C8:K19, delivery items B7:H18. The
+    # real contract template's item table only holds 12 lines (rows
+    # 8-19) - if golden_batch.local.json is regenerated against the new
+    # real templates, keep it at or under that capacity.
+    contract_ws = openpyxl.load_workbook(contract_path)["Sheet1"]
+    delivery_ws = openpyxl.load_workbook(delivery_path)["Sheet1"]
 
-    assert contract_ws["A28"].value == f"合并（RMB大写）：{GOLDEN_RMB_CAPITAL}"
+    assert contract_ws["D21"].value == GOLDEN_RMB_CAPITAL
 
-    second_row = 10  # contract items start at row 9, so the 2nd line is row 10
-    assert contract_ws[f"F{second_row}"].value == float(GOLDEN_SECOND_LINE["net_unit_price"])
-    assert contract_ws[f"G{second_row}"].value == float(GOLDEN_SECOND_LINE["net_amount"])
-    assert contract_ws[f"H{second_row}"].value == float(GOLDEN_SECOND_LINE["tax_amount"])
-    assert contract_ws[f"I{second_row}"].value == float(GOLDEN_SECOND_LINE["gross_amount"])
+    second_row = 9  # contract items start at row 8, so the 2nd line is row 9
+    assert contract_ws[f"H{second_row}"].value == float(GOLDEN_SECOND_LINE["net_unit_price"])
+    assert contract_ws[f"I{second_row}"].value == float(GOLDEN_SECOND_LINE["net_amount"])
+    assert contract_ws[f"J{second_row}"].value == float(GOLDEN_SECOND_LINE["tax_amount"])
+    assert contract_ws[f"K{second_row}"].value == float(GOLDEN_SECOND_LINE["gross_amount"])
 
     n = len(fact_pack.items)
-    contract_gross_by_row = [contract_ws[f"I{9 + i}"].value for i in range(n)]
-    delivery_gross_by_row = [delivery_ws[f"G{7 + i}"].value for i in range(n)]
+    contract_gross_by_row = [contract_ws[f"K{8 + i}"].value for i in range(n)]
+    delivery_gross_by_row = [delivery_ws[f"H{7 + i}"].value for i in range(n)]
 
     # Row-for-row file parity: the delivery note's amount column must equal
     # the contract's, for every line - not just in aggregate.
@@ -133,7 +139,8 @@ def test_real_18_line_sample_matches_golden_totals(tmp_path):
     file_gross_total = sum(Decimal(str(v)) for v in contract_gross_by_row)
     assert file_gross_total.quantize(Decimal("0.01")) == GOLDEN_GROSS_TOTAL
 
-    file_net_total = sum(Decimal(str(contract_ws[f"G{9 + i}"].value)) for i in range(n))
-    file_tax_total = sum(Decimal(str(contract_ws[f"H{9 + i}"].value)) for i in range(n))
+    file_net_total = sum(Decimal(str(contract_ws[f"I{8 + i}"].value)) for i in range(n))
+    file_tax_total = sum(Decimal(str(contract_ws[f"J{8 + i}"].value)) for i in range(n))
     assert file_net_total.quantize(Decimal("0.01")) == GOLDEN_NET_TOTAL
     assert file_tax_total.quantize(Decimal("0.01")) == GOLDEN_TAX_TOTAL
+    assert delivery_ws["D19"].value == float(GOLDEN_GROSS_TOTAL)

@@ -342,8 +342,8 @@ def test_multi_seal_generation_applies_print_profile_and_expected_anchors(
         "delivery.note.v1": TemplateRegistry().get(DocumentType.DELIVERY_NOTE_V1).print_profile,
     }
     expected = {
-        "procurement.contract.v1": ({(0, 45), (5, 45)}, contract_template_path),
-        "delivery.note.v1": ({(1, 30), (5, 30)}, delivery_template_path),
+        "procurement.contract.v1": ({(2, 33), (6, 33)}, contract_template_path),
+        "delivery.note.v1": ({(2, 24), (6, 24)}, delivery_template_path),
     }
     for entry in summary.entries:
         generated = output / entry.output_file

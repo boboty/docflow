@@ -171,6 +171,14 @@ def preflight(definition: TemplateDefinition, template_path: Path) -> None:
                     f"top-left cell, so it cannot be written to",
                 )
 
+    for cell_address in definition.totals:
+        if _is_non_writable_merged_cell(ws, cell_address):
+            raise TemplatePreflightError(
+                "TEMPLATE_MAPPING_INVALID",
+                f"totals cell {cell_address} is inside a merged range but is not its "
+                f"top-left cell, so it cannot be written to",
+            )
+
 
 def _cell_text_context(projection: DocumentProjection) -> dict[str, str]:
     return {
@@ -348,6 +356,9 @@ def render(
     for row in range(start_row + len(projection.items), definition.items.end_row + 1):
         for column_letter in columns.values():
             ws[f"{column_letter}{row}"] = None
+
+    for cell_address, field_name in definition.totals.items():
+        ws[cell_address] = float(getattr(projection.totals, field_name))
 
     enhancements = _insert_images(ws, definition, image_assets or {})
     # Reapply the source template's settings after all mutations (margins,

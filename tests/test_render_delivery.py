@@ -19,20 +19,21 @@ def test_single_delivery_note_generation(delivery_template_path: Path, tmp_path:
 
     assert output_path.exists()
     wb = openpyxl.load_workbook(output_path)
-    ws = wb["送货单"]
-    assert ws["A3"].value == f"收货单位：{pack.ship_to.company}"
-    assert ws["D3"].value == f"联系人：{pack.ship_to.contact}"
-    assert ws["F3"].value == f"NO：{pack.delivery_no}"
-    assert ws["A4"].value == f"收货地址：{pack.ship_to.address}"
+    ws = wb["Sheet1"]
+    assert ws["B3"].value == (
+        f"收货单位：{pack.ship_to.company}    联系人：{pack.ship_to.contact}        NO:{pack.delivery_no}"
+    )
+    assert ws["B4"].value == f"收货地址：{pack.ship_to.address}"
 
     first_item = projection.items[0]
-    assert ws["A7"].value == 1
-    assert ws["B7"].value == first_item.product_name
-    assert ws["F7"].value == float(first_item.gross_unit_price)
-    # Column G (金额) holds the literal, authoritative gross_amount source
+    assert ws["B7"].value == 1
+    assert ws["C7"].value == first_item.product_name
+    assert ws["G7"].value == float(first_item.gross_unit_price)
+    # Column H (金额) holds the literal, authoritative gross_amount source
     # fact - never a recomputed =Dn*Fn formula (see mapping comment / P0
     # repair-2 blocker 1).
-    assert ws["G7"].value == float(first_item.gross_amount)
+    assert ws["H7"].value == float(first_item.gross_amount)
+    assert ws["D19"].value == float(projection.totals.gross_total)
 
 
 def test_unused_rows_are_fully_cleared(delivery_template_path: Path, tmp_path: Path):
@@ -47,14 +48,14 @@ def test_unused_rows_are_fully_cleared(delivery_template_path: Path, tmp_path: P
     render(definition, delivery_template_path, projection, output_path)
 
     wb = openpyxl.load_workbook(output_path)
-    ws = wb["送货单"]
+    ws = wb["Sheet1"]
 
     for offset, item in enumerate(projection.items):
         row = 7 + offset
-        assert ws[f"G{row}"].value == float(item.gross_amount)
+        assert ws[f"H{row}"].value == float(item.gross_amount)
 
-    for row in range(10, 25):
-        for column in "ABCDEFGH":
+    for row in range(10, 19):
+        for column in "BCDEFGHI":
             assert ws[f"{column}{row}"].value is None
 
 
@@ -78,7 +79,7 @@ def test_gross_amount_is_written_verbatim_even_when_it_diverges_from_unit_price_
     render(definition, delivery_template_path, projection, output_path)
 
     wb = openpyxl.load_workbook(output_path)
-    ws = wb["送货单"]
-    assert ws["G7"].value == 2058.10
-    assert ws["G7"].value != 42 * 49  # the recomputed-formula value this bug used to show
+    ws = wb["Sheet1"]
+    assert ws["H7"].value == 2058.10
+    assert ws["H7"].value != 42 * 49  # the recomputed-formula value this bug used to show
     assert projection.items[0].gross_amount == Decimal("2058.10")

@@ -41,7 +41,7 @@ def test_preflight_missing_sheet(contract_template_path: Path):
 def test_preflight_rejects_unknown_header_placeholder(contract_template_path: Path):
     definition = TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1)
     bad_header = dict(definition.header)
-    bad_header["A3"] = "购方：{unknown_fact}"
+    bad_header["C3"] = "购方：{unknown_fact}"
     broken_definition = replace(definition, header=bad_header)
 
     with pytest.raises(TemplatePreflightError) as exc_info:
@@ -66,14 +66,14 @@ def test_preflight_rejects_unknown_item_column_field(contract_template_path: Pat
 
 
 def test_preflight_rejects_header_cell_inside_non_anchor_merged_range(contract_template_path: Path):
-    """B3 sits inside the real template's A3:E3 merge (购方 line) but is not
+    """D3 sits inside the real template's C3:H3 merge (购方 line) but is not
     its top-left anchor - openpyxl raises AttributeError writing to it
     ('MergedCell ... is read-only'). preflight must catch this before any
     record is rendered, not let it surface as an AttributeError mid-batch.
     """
     definition = TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1)
     bad_header = dict(definition.header)
-    bad_header["B3"] = "{buyer}"
+    bad_header["D3"] = "{buyer}"
     broken_definition = replace(definition, header=bad_header)
 
     with pytest.raises(TemplatePreflightError) as exc_info:
@@ -84,7 +84,7 @@ def test_preflight_rejects_header_cell_inside_non_anchor_merged_range(contract_t
 def test_preflight_rejects_malformed_format_string(contract_template_path: Path):
     definition = TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1)
     bad_header = dict(definition.header)
-    bad_header["A3"] = "购方：{buyer"  # unmatched brace -> str.format raises ValueError
+    bad_header["C3"] = "购方：{buyer"  # unmatched brace -> str.format raises ValueError
     broken_definition = replace(definition, header=bad_header)
 
     with pytest.raises(TemplatePreflightError) as exc_info:
@@ -95,7 +95,7 @@ def test_preflight_rejects_malformed_format_string(contract_template_path: Path)
 def test_preflight_rejects_unknown_text_placeholder(contract_template_path: Path):
     definition = TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1)
     bad_text = dict(definition.text)
-    bad_text["A40"] = "{unknown_fact}前发货"
+    bad_text["C29"] = "{unknown_fact}前发货"
     broken_definition = replace(definition, text=bad_text)
 
     with pytest.raises(TemplatePreflightError) as exc_info:
@@ -104,12 +104,12 @@ def test_preflight_rejects_unknown_text_placeholder(contract_template_path: Path
 
 
 def test_preflight_rejects_text_cell_inside_non_anchor_merged_range(contract_template_path: Path):
-    """B40 sits inside the synthetic/real template's A40:I40 merge but is
+    """D29 sits inside the synthetic/real template's C29:K29 merge but is
     not its top-left anchor.
     """
     definition = TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1)
     bad_text = dict(definition.text)
-    bad_text["B40"] = "{delivery_month_day}前发货"
+    bad_text["D29"] = "{delivery_month_day}前发货"
     broken_definition = replace(definition, text=bad_text)
 
     with pytest.raises(TemplatePreflightError) as exc_info:
@@ -120,7 +120,7 @@ def test_preflight_rejects_text_cell_inside_non_anchor_merged_range(contract_tem
 def test_preflight_rejects_malformed_text_format_string(contract_template_path: Path):
     definition = TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1)
     bad_text = dict(definition.text)
-    bad_text["A40"] = "{delivery_month_day前发货"  # unmatched brace
+    bad_text["C29"] = "{delivery_month_day前发货"  # unmatched brace
     broken_definition = replace(definition, text=bad_text)
 
     with pytest.raises(TemplatePreflightError) as exc_info:
@@ -226,7 +226,7 @@ def test_generate_batch_does_not_render_anything_when_mapping_is_broken(
     )
 
     broken_header = dict(delivery_def.header)
-    broken_header["A3"] = "收货单位：{unknown_fact}"
+    broken_header["B3"] = "收货单位：{unknown_fact}"
     (mapping_dir / "delivery.note.v1.yaml").write_text(
         yaml.safe_dump({
             "id": delivery_def.id, "format": delivery_def.format, "sheet": delivery_def.sheet,

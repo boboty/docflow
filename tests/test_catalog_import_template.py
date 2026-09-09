@@ -127,7 +127,7 @@ def test_import_with_replace_overwrites_managed_copy(tmp_path: Path):
 
     source_2 = build_contract_template(tmp_path / "second.xlsx")
     wb = openpyxl.load_workbook(source_2)
-    wb["采购合同"]["A1"] = "采购合同 v2"  # make it distinguishably different
+    wb["Sheet1"]["C2"] = "采购合同 v2"  # make it distinguishably different
     wb.save(source_2)
 
     import_template(catalog_root, "procurement_contract", CONTRACT_DOC_TYPE, source_2, replace=True)
@@ -181,10 +181,10 @@ def test_import_rejects_incompatible_mapping(tmp_path: Path):
     incompatible_source = tmp_path / "incompatible.xlsx"
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "采购合同"
-    # A48 is a header-mapped cell in the real mapping; merging A47:A48
-    # makes A47 the anchor and A48 a non-writable MergedCell.
-    ws.merge_cells("A47:A48")
+    ws.title = "Sheet1"
+    # C34 is a header-mapped cell in the real mapping; merging C33:C34
+    # makes C33 the anchor and C34 a non-writable MergedCell.
+    ws.merge_cells("C33:C34")
     wb.save(incompatible_source)
 
     with pytest.raises(TemplatePreflightError) as exc_info:
@@ -307,7 +307,7 @@ def test_replace_rolls_back_old_managed_bytes_when_yaml_write_fails(tmp_path: Pa
 
     second_source = build_contract_template(tmp_path / "second.xlsx")
     workbook = openpyxl.load_workbook(second_source)
-    workbook["采购合同"]["A1"] = "replacement"
+    workbook["Sheet1"]["C2"] = "replacement"
     workbook.save(second_source)
     assert second_source.read_bytes() != original_managed
     monkeypatch.setattr(mutation, "_write_yaml_atomic", _force_yaml_failure)

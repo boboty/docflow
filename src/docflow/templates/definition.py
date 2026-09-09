@@ -19,6 +19,14 @@ Three mapping sections, all projection-only:
     transaction's facts at all, it belongs in `header` or `text`, not in
     the "static boilerplate we don't touch" bucket.
   - `items`: the line-item table (start_row/end_row + per-field columns).
+  - `totals`: optional ``{cell_address: field_name}`` numeric overrides for
+    a document-level aggregate (net_total/tax_total/gross_total) that the
+    real template holds as a plain literal number rather than a formula
+    that recalculates on its own (e.g. a "合计金额" cell with no native
+    SUM). The renderer writes the already-computed Totals field directly -
+    this exists so a template with no self-updating total cell still never
+    keeps a previous transaction's number, without asking an agent to do
+    the arithmetic.
   - `images`: optional managed image placements. Size is declared as
     `printed_diameter_mm` - the image's target physical size on the PRINTED
     page, not its size inside the Excel workbook. Because a real template is
@@ -43,7 +51,7 @@ assortment of yaml.YAMLError / TypeError / ValueError leaking out.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import yaml
@@ -112,6 +120,7 @@ class TemplateDefinition:
     items: ItemsMapping
     images: dict[str, ImageMapping]
     print_profile: PrintProfile
+    totals: dict[str, str] = field(default_factory=dict)
 
 
 def _validate_column_letter(column: str, path: Path, what: str) -> None:
@@ -235,6 +244,33 @@ def _parse_images(images_raw: object, path: Path) -> dict[str, ImageMapping]:
     return result
 
 
+_VALID_TOTAL_FIELDS = frozenset({"net_total", "tax_total", "gross_total"})
+
+
+def _parse_totals(totals_raw: object, path: Path) -> dict[str, str]:
+    if totals_raw is None:
+        return {}
+    if not isinstance(totals_raw, dict):
+        raise TemplateDefinitionError(f"malformed template mapping {path}: 'totals' must be a mapping")
+
+    result: dict[str, str] = {}
+    for cell_address, field_name in totals_raw.items():
+        if not isinstance(cell_address, str) or not _CELL_ADDRESS_RE.match(cell_address):
+            raise TemplateDefinitionError(f"malformed template mapping {path}: invalid totals cell {cell_address!r}")
+        column_letters, row = coordinate_from_string(cell_address)
+        if row > MAX_EXCEL_ROW or column_index_from_string(column_letters) > MAX_EXCEL_COLUMN:
+            raise TemplateDefinitionError(
+                f"malformed template mapping {path}: totals cell {cell_address!r} is outside Excel's grid"
+            )
+        if field_name not in _VALID_TOTAL_FIELDS:
+            raise TemplateDefinitionError(
+                f"malformed template mapping {path}: totals.{cell_address} references unknown field "
+                f"{field_name!r} (expected one of {sorted(_VALID_TOTAL_FIELDS)})"
+            )
+        result[cell_address] = field_name
+    return result
+
+
 # Only A4/portrait are supported today - deliberately not a general
 # printer-settings framework (there is exactly one real-world shape this
 # project's templates need). Extend these sets only when an actual template
@@ -303,6 +339,7 @@ def load_template_definition(path: Path) -> TemplateDefinition:
         items=_parse_items(raw["items"], path),
         images=_parse_images(raw.get("images"), path),
         print_profile=_parse_print_profile(raw["print"], path),
+        totals=_parse_totals(raw.get("totals"), path),
     )
 
 

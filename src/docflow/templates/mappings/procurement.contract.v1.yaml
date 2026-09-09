@@ -1,76 +1,100 @@
-# Mapping for the real "采购合同" xlsx template.
-# Coordinates derived from manual inspection of a real template instance
-# (merged cells, item table at rows 9-26, subtotal formulas at row 27,
-# RMB-capital line at row 28). The template file itself is never committed.
+# Mapping for the real "采购合同" xlsx template (Template Migration, 2026-09).
+#
+# This mapping targets the ORIGINAL business Excel file, not an OCR/scan
+# reconstruction. The real file's own sheet is literally named "Sheet1" (no
+# Chinese sheet title) - do not "fix" that back to 采购合同, it would break
+# preflight against the real template. Coordinates below were read directly
+# off a real instance: 2026.06.15-FBA20260618002采购合同.xlsx.
 #
 # Most clause paragraphs (质量要求 / 交货地点 / 运输方式 / 结算方式 / 争议解决)
 # are genuinely static template boilerplate and are intentionally NOT
-# overwritten. Row 40 (违约责任) is NOT purely static, though - it embeds
-# the delivery deadline date inline ("6月9日前分批次完成发货……"). A real
-# generation run against a real 18-line sample proved that leaving it
-# alone lets a PREVIOUS transaction's delivery date leak into a new
-# document. Any cell whose content depends on this transaction's facts at
-# all - even a single date inside otherwise-static prose - must be listed
-# below (in `text`, not silently left as "static"), so the renderer always
-# overwrites it.
+# overwritten. Row 29 (违约责任) is NOT purely static, though - it embeds
+# the delivery deadline date inline ("6月8日前分批次完成发货……"). Any cell
+# whose content depends on this transaction's facts at all - even a single
+# date inside otherwise-static prose - must be listed below (in `text`, not
+# silently left as "static"), so the renderer always overwrites it.
 id: procurement.contract.v1
 format: xlsx
-sheet: 采购合同
+sheet: Sheet1
 
-# Fixed A4 print profile - replaces manual "Fit to Page" scaling. scale_percent
-# is a calibrated business value: it is the ACTUAL Excel scale the real
-# template must print at on A4 for this print_area/paper_size/orientation.
-# 70 is a starting point per the initial calibration pass on a real printed
-# sample, not a made-up constant - re-measure and adjust it here (not in
-# code) whenever the template's layout changes.
+# Fixed A4 print profile. The real template's OWN native page_setup.scale is
+# 80, but the source file's print_area was never actually set (empty) - it
+# was never validated against B1:K35 by Excel. A real PDF export via
+# Microsoft Excel (Template Migration acceptance pass, 2026-09) proved 80%
+# spills column K (价税合计) onto a second A4 page: the sheet's default font
+# is 宋体 (SimSun), wider per character than a Latin font, so column widths
+# in "characters" convert to more points than the native scale assumed.
+# 76 is the largest whole-percent scale that still renders this print_area
+# on a single A4 page (verified: 76% -> 1 page, 77% -> 2 pages) - a minimal,
+# empirically-verified deviation from the native 80, not a re-run of the old
+# OCR-era 70/85/90% guessing cycle.
 print:
   paper_size: A4
   orientation: portrait
-  print_area: A1:I49
-  scale_percent: 70
+  print_area: B1:K35
+  scale_percent: 76
 
 header:
-  A3: "购方：{buyer}"
-  F3: "合同编号：{contract_no}"
-  A4: "销方：{seller}"
-  A28: "合并（RMB大写）：{amount_in_words}"
-  A48: "购方：{buyer}"
-  F48: "销方：{seller}"
-  A49: "时间：{contract_date}"
-  F49: "时间：{contract_date}"
+  C3: "购方：{buyer}"
+  I3: "合同编号：{contract_no}"
+  C4: "销方：{seller}"
+  # C21 ("合并（RMB大写）：") is the static label; D21 is the value cell the
+  # real template pairs it with (merged D21:H21). The source file computes
+  # this cell with its own native TEXT/DBNum2 formula off of K20 - that is
+  # NOT trusted here (a spreadsheet-formula render of an amount is exactly
+  # the kind of "could recompute a different number than the source fact"
+  # this renderer's own docstring forbids); the already-derived
+  # amount_in_words value is written directly instead, overwriting the
+  # formula with a literal value.
+  D21: "{amount_in_words}"
+  C34: "购方：{buyer}"
+  G34: "销方：{seller}"
+  C35: "时间：{contract_date}"
+  G35: "时间：{contract_date}"
 
 text:
-  A40: "{delivery_month_day}前分批次完成发货，每逾期1日，乙方按合同总金额的3%支付违约金；逾期超过7日，甲方有权解除合同并要求赔偿损失。"
+  C29: "{delivery_month_day}前分批次完成发货，每逾期1日，乙方按合同总金额的3%支付违约金；逾期超过7日，甲方有权解除合同并要求赔偿损失。"
 
 # printed_diameter_mm is the seal's target visible diameter ON THE PRINTED
-# PAGE, not its size inside the Excel workbook. The renderer inflates it by
+# page, not its size inside the Excel workbook. The renderer inflates it by
 # 1 / (print.scale_percent / 100) when embedding the image so it still comes
 # out at this diameter once the sheet itself is scaled down for A4.
+#
+# Anchors sit on row 34 (the buyer/seller signature line), which the real
+# template's own author already sized to 70pt - roughly 5x every
+# surrounding row - specifically to leave room for a physical stamp
+# overlapping the "购方：xxx" / "销方：xxx" text. This is the original
+# signature/seal area, not a guessed empty spot.
 images:
   buyer_seal:
-    anchor: A46
+    anchor: C34
     printed_diameter_mm: 38
-    x_offset_px: 8
-    y_offset_px: 4
+    x_offset_px: 60
+    y_offset_px: 10
   seller_seal:
-    anchor: F46
+    anchor: G34
     printed_diameter_mm: 38
-    x_offset_px: 8
-    y_offset_px: 4
+    x_offset_px: 60
+    y_offset_px: 10
 
 items:
-  start_row: 9
-  end_row: 26
+  start_row: 8
+  end_row: 19
   columns:
-    sku: A
-    product_name: B
-    specification: C
-    quantity: D
-    unit: E
-    net_unit_price: F
-    net_amount: G
-    tax_amount: H
-    gross_amount: I
-  # Row 27 (小计 = SUM(G9:G26), SUM(H9:H26), SUM(I9:I26)) and I28 (=I27) are
+    sku: C
+    product_name: D
+    specification: E
+    quantity: F
+    unit: G
+    net_unit_price: H
+    net_amount: I
+    tax_amount: J
+    gross_amount: K
+  # Row 20 (小计 = SUM(I8:I19), SUM(J8:J19), SUM(K8:K19)) and K21 (=K20) are
   # native Excel formulas left intact by the renderer; they recalculate
-  # automatically once Excel opens the generated file (fullCalcOnLoad).
+  # automatically once Excel opens the generated file (fullCalcOnLoad). The
+  # source file's own H/I/J columns (net_unit_price/net_amount/tax_amount)
+  # are formulas derived FROM K (gross); this renderer overwrites all four
+  # money columns with already-derived literal values instead, so the
+  # printed figures always match rules.money's authoritative computation
+  # rather than whatever the sheet's own formula would recompute.

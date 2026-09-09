@@ -97,8 +97,8 @@ def test_same_input_produces_stable_business_content(
     wb_b = openpyxl.load_workbook(tmp_path / "out-b" / summary_b.entries[0].output_file)
     ws_a = wb_a[wb_a.sheetnames[0]]
     ws_b = wb_b[wb_b.sheetnames[0]]
-    assert ws_a["A3"].value == ws_b["A3"].value
-    assert ws_a["I9"].value == ws_b["I9"].value
+    assert ws_a["C3"].value == ws_b["C3"].value
+    assert ws_a["K8"].value == ws_b["K8"].value
 
 
 def test_contract_and_delivery_files_agree_on_amount_within_source_tolerance(
@@ -126,8 +126,8 @@ def test_contract_and_delivery_files_agree_on_amount_within_source_tolerance(
 
     contract_wb = openpyxl.load_workbook(output_dir / "BR-TOLERANCE" / "procurement-contract.xlsx")
     delivery_wb = openpyxl.load_workbook(output_dir / "BR-TOLERANCE" / "delivery-note.xlsx")
-    contract_gross = contract_wb["采购合同"]["I9"].value
-    delivery_gross = delivery_wb["送货单"]["G7"].value
+    contract_gross = contract_wb["Sheet1"]["K8"].value
+    delivery_gross = delivery_wb["Sheet1"]["H7"].value
 
     assert contract_gross == 2058.10
     assert delivery_gross == 2058.10

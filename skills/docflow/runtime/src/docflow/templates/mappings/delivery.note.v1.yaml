@@ -1,68 +1,93 @@
-# Mapping for the real "送货单" xlsx template.
-# Coordinates derived from manual inspection of a real template instance
-# (item table at rows 7-24, total formula at row 25). The template file
-# itself is never committed.
+# Mapping for the real "送货单" xlsx template (Template Migration, 2026-09).
+#
+# This mapping targets the ORIGINAL business Excel file, not an OCR/scan
+# reconstruction. The real file's own sheet is literally named "Sheet1" (no
+# Chinese sheet title). Coordinates below were read directly off a real
+# instance: 2026.06.15-FBA20260618002送货单-愿景征途.xlsx.
 id: delivery.note.v1
 format: xlsx
-sheet: 送货单
+sheet: Sheet1
 
-# Fixed A4 print profile - see procurement.contract.v1.yaml for the full
-# rationale. scale_percent must be re-measured against a real printout of
-# this template, independently of the contract's own scale_percent.
+# Fixed A4 print profile. The real template carries no native page_setup
+# scale at all (no "Fit to Page", no manual zoom), so this started at 100%
+# (native 1:1) rather than importing any scale value calibrated against the
+# OCR reconstruction. A real PDF export via Microsoft Excel (Template
+# Migration acceptance pass, 2026-09) proved 100% spills onto a second A4
+# page (the sheet's default font is 宋体/SimSun, wider per character than a
+# Latin font). 98 is the largest whole-percent scale that still renders
+# this print_area on a single A4 page (verified: 98% -> 1 page, 99% -> 2
+# pages).
 print:
   paper_size: A4
   orientation: portrait
-  print_area: A1:H33
-  scale_percent: 70
+  print_area: B1:I25
+  scale_percent: 98
 
 header:
-  A3: "收货单位：{ship_to_company}"
-  D3: "联系人：{ship_to_contact}"
-  F3: "NO：{delivery_no}"
-  A4: "收货地址：{ship_to_address}"
-  A5: "联系电话：{ship_to_phone}"
-  E5: "日期：{delivery_date}"
-  A28: "送货单位：{seller}"
-  A29: "地址：{seller_address}"
-  A30: "联系电话：{seller_contact}{seller_phone}"
-  A33: "送货单位：{seller}"
-  E33: "收货单位：{ship_to_company}"
+  # B3/B4/B5 are each ONE free-text cell in the real template (merged
+  # B:I), not a fielded row - the original author typed multiple facts
+  # into a single line with manual spacing to visually separate them.
+  # The exact spacing below matches the real template's own separators;
+  # this is not a layout the renderer invented.
+  B3: "收货单位：{ship_to_company}    联系人：{ship_to_contact}        NO:{delivery_no}"
+  B4: "收货地址：{ship_to_address}"
+  B5: "联系电话:{ship_to_phone}                             日期： {delivery_date}"
+  B22: "送货单位：{seller}"
+  B23: "地址：{seller_address}"
+  B24: "联系电话：{seller_contact}{seller_phone}"
+  B25: "送货单位：{seller}         收货单位：{ship_to_company} "
 
 # printed_diameter_mm is the seal's target visible diameter on the printed
 # page - see procurement.contract.v1.yaml for the full rationale.
+#
+# Both anchors sit on row 25 (the seller/ship-to signature line), which the
+# real template's own author already sized to 72pt - roughly 3.5x every
+# surrounding row - specifically to leave room for physical stamps
+# overlapping the "送货单位：xxx" / "收货单位：xxx" text. This is the
+# original signature/seal area, not a guessed empty spot. seller_seal sits
+# over the first (送货单位) half of the row; ship_to_seal sits over the
+# second (收货单位) half, which starts around column G once the first
+# half's label and company name have printed.
 images:
   seller_seal:
-    anchor: B31
+    anchor: C25
     printed_diameter_mm: 38
-    x_offset_px: 8
-    y_offset_px: 4
+    x_offset_px: 20
+    y_offset_px: 10
   ship_to_seal:
-    anchor: F31
+    anchor: G25
     printed_diameter_mm: 38
-    x_offset_px: 8
-    y_offset_px: 4
+    x_offset_px: 20
+    y_offset_px: 10
 
 items:
   start_row: 7
-  end_row: 24
+  end_row: 18
   columns:
-    index: A
-    product_name: B
-    specification: C
-    quantity: D
-    unit: E
-    gross_unit_price: F
-    gross_amount: G
-    remarks: H
-  # Column G (金额/元) is written as the LITERAL authoritative gross_amount
-  # source fact, not a recomputed =Dn*Fn formula (Phase 0 Repair-2 P0
-  # blocker: gross_unit_price*quantity is only guaranteed to match
-  # gross_amount within a documented rounding tolerance - a per-row
-  # formula would silently show a different number than the contract's I
-  # column whenever that tolerance is used, so the two real files could
-  # disagree on business content despite both passing validation). Unused
-  # rows are cleared like every other mapped column. The template's own
-  # D25 = SUM(G7:G24) total is a fixed-range aggregate formula left
-  # untouched - since G always holds the true gross_amount, its sum is
-  # correct; it recalculates automatically once Excel opens the file
-  # (fullCalcOnLoad).
+    index: B
+    product_name: C
+    specification: D
+    quantity: E
+    unit: F
+    gross_unit_price: G
+    gross_amount: H
+    remarks: I
+  # Column G (单价/元) is a native "=H{row}/E{row}" formula in the real
+  # file; this renderer overwrites it with the already-derived literal
+  # gross_unit_price, so the printed unit price always matches
+  # rules.money's authoritative computation rather than whatever the
+  # sheet's own formula would recompute. Column H (金额/元) is likewise
+  # written as the literal authoritative gross_amount source fact, never a
+  # recomputed per-row formula. Unused rows are cleared like every other
+  # mapped column.
+
+# D19 ("合计金额：" in B19, value in merged D19:I19) is a HARDCODED LITERAL
+# NUMBER in the real template, not a SUM formula - unlike the contract's
+# native SUM(K8:K19), there is nothing here that recalculates on its own,
+# so a previous transaction's total would otherwise survive untouched into
+# a new document. `totals` is the minimal deterministic numeric mapping
+# needed to close that gap: it writes an already-computed Totals field
+# (rules.money.compute_totals, never Agent arithmetic) directly as a
+# number, the same way `items` does for line amounts.
+totals:
+  D19: gross_total
