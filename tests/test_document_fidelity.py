@@ -209,6 +209,34 @@ def test_import_seal_crops_transparent_padding_and_centers_on_square_canvas(tmp_
         assert original.size == (200, 200)
 
 
+def test_import_seal_normalization_preserves_semi_transparent_pixel_values(tmp_path: Path):
+    """Regression: normalization must copy cropped pixels verbatim, not
+    paste them using their own alpha band as the paste mask. Image.paste()
+    with a mask blends source and destination - including the alpha channel
+    - for any partially-transparent pixel, which double-applies alpha (a
+    128-alpha pixel pasted onto a fully-transparent background would come
+    out as (R/2, G/2, B/2, 64) instead of the original (R, G, B, 128)).
+    Every non-transparent pixel's RGBA value must be bit-for-bit identical
+    before and after normalization.
+    """
+    root = _catalog(tmp_path / "workspace" / ".docflow" / "catalog", "示例卖方有限公司")
+    source = tmp_path / "semi_transparent.png"
+    original_pixel = (200, 150, 50, 128)
+    canvas = PILImage.new("RGBA", (100, 100), (0, 0, 0, 0))
+    translucent_seal = PILImage.new("RGBA", (20, 20), original_pixel)
+    canvas.paste(translucent_seal, (40, 40))
+    canvas.save(source, "PNG")
+
+    import_seal(root, "linyi_yier", source, replace=False)
+
+    managed = root.parent / "assets" / "seals" / "linyi_yier.png"
+    with PILImage.open(managed) as result:
+        result = result.convert("RGBA")
+        assert result.size == (20, 20)
+        for point in ((0, 0), (10, 10), (19, 19)):
+            assert result.getpixel(point) == original_pixel
+
+
 def _generated(
     tmp_path: Path,
     sample_batch_dict: dict,

@@ -322,6 +322,14 @@ def _normalize_seal_png(source: Path) -> bytes:
     with the visible seal, so that math is correct for every document
     generated from it afterwards. Only non-transparent pixels are touched -
     none are modified, just relocated onto a fresh transparent canvas.
+
+    Pastes with a plain 2-tuple offset (no mask). Passing `cropped` itself
+    as the paste mask would use its alpha band as a blend weight against
+    the destination canvas - Image.paste() mixes source and destination
+    (RGB *and* alpha) for any partially-transparent pixel, applying alpha
+    a second time on top of the alpha the pixel already carries. A bare
+    offset paste is a verbatim copy: every RGBA value, including
+    partially-transparent ones, survives unchanged.
     """
     from PIL import Image
 
@@ -332,7 +340,7 @@ def _normalize_seal_png(source: Path) -> bytes:
         side = max(cropped.width, cropped.height)
         canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
         offset = ((side - cropped.width) // 2, (side - cropped.height) // 2)
-        canvas.paste(cropped, offset, cropped)
+        canvas.paste(cropped, offset)
         buffer = io.BytesIO()
         canvas.save(buffer, format="PNG")
         return buffer.getvalue()
