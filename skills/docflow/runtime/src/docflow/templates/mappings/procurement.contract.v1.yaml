@@ -17,6 +17,18 @@ id: procurement.contract.v1
 format: xlsx
 sheet: 采购合同
 
+# Fixed A4 print profile - replaces manual "Fit to Page" scaling. scale_percent
+# is a calibrated business value: it is the ACTUAL Excel scale the real
+# template must print at on A4 for this print_area/paper_size/orientation.
+# 70 is a starting point per the initial calibration pass on a real printed
+# sample, not a made-up constant - re-measure and adjust it here (not in
+# code) whenever the template's layout changes.
+print:
+  paper_size: A4
+  orientation: portrait
+  print_area: A1:I49
+  scale_percent: 70
+
 header:
   A3: "购方：{buyer}"
   F3: "合同编号：{contract_no}"
@@ -30,17 +42,19 @@ header:
 text:
   A40: "{delivery_month_day}前分批次完成发货，每逾期1日，乙方按合同总金额的3%支付违约金；逾期超过7日，甲方有权解除合同并要求赔偿损失。"
 
+# printed_diameter_mm is the seal's target visible diameter ON THE PRINTED
+# PAGE, not its size inside the Excel workbook. The renderer inflates it by
+# 1 / (print.scale_percent / 100) when embedding the image so it still comes
+# out at this diameter once the sheet itself is scaled down for A4.
 images:
   buyer_seal:
     anchor: A46
-    width_mm: 38
-    height_mm: 38
+    printed_diameter_mm: 38
     x_offset_px: 8
     y_offset_px: 4
   seller_seal:
     anchor: F46
-    width_mm: 38
-    height_mm: 38
+    printed_diameter_mm: 38
     x_offset_px: 8
     y_offset_px: 4
 

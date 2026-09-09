@@ -41,7 +41,7 @@ from openpyxl.workbook.properties import CalcProperties
 
 from docflow.domain.document import DocumentProjection, chinese_date, chinese_month_day
 from docflow.rules.money import LineItemAmounts
-from docflow.templates.definition import TemplateDefinition
+from docflow.templates.definition import PrintProfile, TemplateDefinition
 
 TEMPLATE_ITEM_CAPACITY_EXCEEDED = "TEMPLATE_ITEM_CAPACITY_EXCEEDED"
 
@@ -213,6 +213,28 @@ def _item_cell_value(item: LineItemAmounts, index: int, field_name: str):
     return value
 
 
+def _apply_print_profile(ws, profile: PrintProfile) -> None:
+    """Author the sheet's scale-critical print settings from the template's
+    own calibrated PrintProfile, rather than trusting whatever the source
+    template file happens to carry (typically a user's manual, dynamic "Fit
+    to Page" setting - exactly what makes printed seal size depend on
+    however that print run's fit-to-page math happened to land). Only the
+    settings that actually cause the fit-to-page distortion are touched
+    here; everything else (margins, headers/footers, gridlines, breaks) is
+    preserved as-is by `_snapshot_print_settings`/`_restore_print_settings`.
+    """
+    # profile.paper_size is validated at mapping-load time to always be
+    # "A4" (see templates.definition._SUPPORTED_PAPER_SIZES) - there is
+    # exactly one real-world paper size this project's templates need.
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
+    ws.page_setup.orientation = profile.orientation
+    ws.page_setup.scale = profile.scale_percent
+    ws.page_setup.fitToWidth = None
+    ws.page_setup.fitToHeight = None
+    ws.sheet_properties.pageSetUpPr.fitToPage = False
+    ws.print_area = profile.print_area
+
+
 def _snapshot_print_settings(ws) -> dict:
     """Capture every openpyxl-exposed print setting before cell/image edits."""
     return {
@@ -253,6 +275,14 @@ def _restore_print_settings(ws, settings: dict) -> None:
 
 
 def _insert_images(ws, definition: TemplateDefinition, image_assets: dict[str, Path]) -> tuple[str, ...]:
+    # A mapping's printed_diameter_mm is the seal's target size on the
+    # PRINTED page. Since the whole sheet is printed at print.scale_percent,
+    # the image must be embedded into the workbook larger than that by the
+    # inverse of the scale factor, so it still measures printed_diameter_mm
+    # once the page itself is scaled down (e.g. at 70% scale, a 38mm printed
+    # target is embedded at 38 / 0.70 ≈ 54.29mm in the workbook - looking
+    # oversized in Excel is expected and necessary, not a bug).
+    scale_factor = definition.print_profile.scale_percent / 100.0
     enhancements: list[str] = []
     for image_id, mapping in definition.images.items():
         asset_path = image_assets.get(image_id)
@@ -268,12 +298,11 @@ def _insert_images(ws, definition: TemplateDefinition, image_assets: dict[str, P
                 colOff=pixels_to_EMU(mapping.x_offset_px),
                 rowOff=pixels_to_EMU(mapping.y_offset_px),
             )
+            workbook_diameter_mm = mapping.printed_diameter_mm / scale_factor
+            size_emu = round(workbook_diameter_mm * 36_000)
             image.anchor = OneCellAnchor(
                 _from=marker,
-                ext=XDRPositiveSize2D(
-                    cx=int(mapping.width_mm * 36_000),
-                    cy=int(mapping.height_mm * 36_000),
-                ),
+                ext=XDRPositiveSize2D(cx=size_emu, cy=size_emu),
             )
             ws.add_image(image)
             enhancements.append(f"IMAGE_INSERTED {image_id}")
@@ -321,9 +350,14 @@ def render(
             ws[f"{column_letter}{row}"] = None
 
     enhancements = _insert_images(ws, definition, image_assets or {})
-    # Reapply the source template's settings after all mutations. This is
-    # intentionally a copy, not a guessed A4 configuration.
+    # Reapply the source template's settings after all mutations (margins,
+    # headers/footers, gridlines, breaks - a copy, not a guess). Then
+    # authoritatively overwrite the scale-critical subset from the
+    # template's own calibrated PrintProfile: fixed A4/portrait/print
+    # area/scale, fitToPage disabled - never whatever "Fit to Page" state
+    # the source file happened to carry.
     _restore_print_settings(ws, print_settings)
+    _apply_print_profile(ws, definition.print_profile)
 
     if wb.calculation is None:
         wb.calculation = CalcProperties(fullCalcOnLoad=True)

@@ -19,8 +19,20 @@ Three mapping sections, all projection-only:
     transaction's facts at all, it belongs in `header` or `text`, not in
     the "static boilerplate we don't touch" bucket.
   - `items`: the line-item table (start_row/end_row + per-field columns).
-  - `images`: optional managed image placements. It describes layout only;
-    image bytes are supplied separately by the generation orchestrator.
+  - `images`: optional managed image placements. Size is declared as
+    `printed_diameter_mm` - the image's target physical size on the PRINTED
+    page, not its size inside the Excel workbook. Because a real template is
+    printed at `print.scale_percent` (see below), the renderer inflates this
+    by `1 / (scale_percent / 100)` to get the workbook-embedded size, so the
+    printed output still comes out at the declared diameter. It describes
+    layout only; image bytes are supplied separately by the generation
+    orchestrator.
+  - `print`: the template's fixed A4 print profile (paper size, orientation,
+    print area, scale). This is authored once per template and calibrated
+    against a real printout - it replaces ad hoc manual "fit to page"
+    scaling, which is what silently shrinks mapped seal sizes on paper in
+    the first place (a `width_mm` declared against the workbook means
+    nothing once the sheet itself gets scaled down to fit a page).
 
 Every parsing failure here (bad YAML, wrong types, illegal row numbers,
 malformed cell/column references) is normalized to TemplateDefinitionError
@@ -68,10 +80,26 @@ class ItemsMapping:
 @dataclass(frozen=True, slots=True)
 class ImageMapping:
     anchor: str
-    width_mm: float
-    height_mm: float
+    printed_diameter_mm: float
     x_offset_px: int = 0
     y_offset_px: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class PrintProfile:
+    """A template's fixed A4 print profile. `scale_percent` is a calibrated
+    business value, not a guess - it must be set by printing the real
+    template and measuring the result, then hand-tuned until printed output
+    matches (see `docflow.renderers.xlsx` for how it also drives printed
+    image sizing). There is deliberately no dynamic fitToWidth/fitToHeight
+    here: that's exactly the "user picks a reasonable-looking zoom" behavior
+    this profile exists to replace.
+    """
+
+    paper_size: str
+    orientation: str
+    print_area: str
+    scale_percent: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +111,7 @@ class TemplateDefinition:
     text: dict[str, str]
     items: ItemsMapping
     images: dict[str, ImageMapping]
+    print_profile: PrintProfile
 
 
 def _validate_column_letter(column: str, path: Path, what: str) -> None:
@@ -190,20 +219,62 @@ def _parse_images(images_raw: object, path: Path) -> dict[str, ImageMapping]:
         if row > MAX_EXCEL_ROW or column_index_from_string(column_letters) > MAX_EXCEL_COLUMN:
             raise TemplateDefinitionError(f"malformed template mapping {path}: {where}.anchor is outside Excel's grid")
         try:
-            width_mm = float(raw["width_mm"])
-            height_mm = float(raw["height_mm"])
+            printed_diameter_mm = float(raw["printed_diameter_mm"])
             x_offset_px = int(raw.get("x_offset_px", 0))
             y_offset_px = int(raw.get("y_offset_px", 0))
         except (KeyError, TypeError, ValueError) as exc:
             raise TemplateDefinitionError(
-                f"malformed template mapping {path}: {where} requires numeric width_mm/height_mm and integer offsets"
+                f"malformed template mapping {path}: {where} requires a numeric printed_diameter_mm "
+                f"and integer offsets"
             ) from exc
-        if width_mm <= 0 or height_mm <= 0 or x_offset_px < 0 or y_offset_px < 0:
+        if printed_diameter_mm <= 0 or x_offset_px < 0 or y_offset_px < 0:
             raise TemplateDefinitionError(
                 f"malformed template mapping {path}: {where} dimensions must be positive and offsets non-negative"
             )
-        result[image_id] = ImageMapping(anchor, width_mm, height_mm, x_offset_px, y_offset_px)
+        result[image_id] = ImageMapping(anchor, printed_diameter_mm, x_offset_px, y_offset_px)
     return result
+
+
+# Only A4/portrait are supported today - deliberately not a general
+# printer-settings framework (there is exactly one real-world shape this
+# project's templates need). Extend these sets only when an actual template
+# needs it.
+_SUPPORTED_PAPER_SIZES = {"A4"}
+_SUPPORTED_ORIENTATIONS = {"portrait", "landscape"}
+_MIN_SCALE_PERCENT = 10
+_MAX_SCALE_PERCENT = 400
+
+
+def _parse_print_profile(print_raw: object, path: Path) -> PrintProfile:
+    if not isinstance(print_raw, dict):
+        raise TemplateDefinitionError(f"malformed template mapping {path}: missing or invalid 'print' section")
+
+    paper_size = print_raw.get("paper_size")
+    if paper_size not in _SUPPORTED_PAPER_SIZES:
+        raise TemplateDefinitionError(
+            f"malformed template mapping {path}: print.paper_size must be one of {sorted(_SUPPORTED_PAPER_SIZES)}"
+        )
+    orientation = print_raw.get("orientation")
+    if orientation not in _SUPPORTED_ORIENTATIONS:
+        raise TemplateDefinitionError(
+            f"malformed template mapping {path}: print.orientation must be one of {sorted(_SUPPORTED_ORIENTATIONS)}"
+        )
+    print_area = print_raw.get("print_area")
+    if not isinstance(print_area, str) or not print_area:
+        raise TemplateDefinitionError(f"malformed template mapping {path}: print.print_area must be a non-empty string")
+    try:
+        scale_percent = round(float(print_raw["scale_percent"]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TemplateDefinitionError(
+            f"malformed template mapping {path}: print.scale_percent must be numeric"
+        ) from exc
+    if not (_MIN_SCALE_PERCENT <= scale_percent <= _MAX_SCALE_PERCENT):
+        raise TemplateDefinitionError(
+            f"malformed template mapping {path}: print.scale_percent must be between "
+            f"{_MIN_SCALE_PERCENT} and {_MAX_SCALE_PERCENT}"
+        )
+
+    return PrintProfile(paper_size=paper_size, orientation=orientation, print_area=print_area, scale_percent=scale_percent)
 
 
 def load_template_definition(path: Path) -> TemplateDefinition:
@@ -220,6 +291,8 @@ def load_template_definition(path: Path) -> TemplateDefinition:
 
     if "items" not in raw:
         raise TemplateDefinitionError(f"malformed template mapping {path}: missing 'items'")
+    if "print" not in raw:
+        raise TemplateDefinitionError(f"malformed template mapping {path}: missing 'print'")
 
     return TemplateDefinition(
         id=_require_str(raw, "id", path),
@@ -229,6 +302,7 @@ def load_template_definition(path: Path) -> TemplateDefinition:
         text=_parse_cell_text_mapping(raw.get("text"), "text", path),
         items=_parse_items(raw["items"], path),
         images=_parse_images(raw.get("images"), path),
+        print_profile=_parse_print_profile(raw["print"], path),
     )
 
 

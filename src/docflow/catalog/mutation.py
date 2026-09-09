@@ -28,6 +28,7 @@ Two distinct mutation paths, matching a clean ownership boundary:
 from __future__ import annotations
 
 import copy
+import io
 import json
 import re
 import shutil
@@ -306,8 +307,45 @@ def import_template(catalog_root: Path, key: str, document_type: str, source: Pa
             backup_path.unlink()
 
 
+def _normalize_seal_png(source: Path) -> bytes:
+    """Crop a seal PNG to its non-transparent (alpha-channel) bounding box
+    and center it in a transparent square canvas.
+
+    A source PNG frequently carries incidental transparent padding around
+    the actual stamped seal (e.g. exported on a fixed canvas size). A
+    template mapping's `printed_diameter_mm` describes the seal's visible
+    outer diameter, not the PNG canvas - if that padding survives into the
+    managed asset, the renderer's printed-size math (which sizes the whole
+    image to `printed_diameter_mm`) ends up shrinking the *visible* seal
+    well below the declared diameter. Cropping to the alpha bounding box
+    here, once, at import time, makes the managed asset's canvas edge-to-edge
+    with the visible seal, so that math is correct for every document
+    generated from it afterwards. Only non-transparent pixels are touched -
+    none are modified, just relocated onto a fresh transparent canvas.
+    """
+    from PIL import Image
+
+    with Image.open(source) as opened:
+        rgba = opened.convert("RGBA")
+        bbox = rgba.getchannel("A").getbbox()
+        cropped = rgba.crop(bbox) if bbox is not None else rgba
+        side = max(cropped.width, cropped.height)
+        canvas = Image.new("RGBA", (side, side), (0, 0, 0, 0))
+        offset = ((side - cropped.width) // 2, (side - cropped.height) // 2)
+        canvas.paste(cropped, offset, cropped)
+        buffer = io.BytesIO()
+        canvas.save(buffer, format="PNG")
+        return buffer.getvalue()
+
+
 def import_seal(catalog_root: Path, organization: str, source: Path, replace: bool) -> None:
-    """Validate and atomically import one organization's managed PNG seal."""
+    """Validate and atomically import one organization's managed PNG seal.
+
+    The managed copy is not a byte-for-byte copy of `source`: it is
+    normalized (see `_normalize_seal_png`) so its canvas has no leftover
+    transparent padding around the visible seal. `source` itself is never
+    modified.
+    """
     organizations_raw, products_raw, templates_raw = load_raw_sections(catalog_root)
     if organization not in organizations_raw:
         raise CatalogMutationError("ORGANIZATION_NOT_FOUND", f"organization {organization!r} does not exist")
@@ -353,7 +391,7 @@ def import_seal(catalog_root: Path, organization: str, source: Path, replace: bo
     backup_ready = False
     final_replaced = False
     try:
-        shutil.copyfile(source, tmp_path)
+        tmp_path.write_bytes(_normalize_seal_png(source))
         if managed_existed:
             shutil.copyfile(final_path, backup_path)
             backup_ready = True

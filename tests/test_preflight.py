@@ -202,10 +202,20 @@ def test_generate_batch_does_not_render_anything_when_mapping_is_broken(
     contract_def = good_registry.get(DocumentType.PROCUREMENT_CONTRACT_V1)
     delivery_def = good_registry.get(DocumentType.DELIVERY_NOTE_V1)
 
+    def _print_section(definition):
+        profile = definition.print_profile
+        return {
+            "paper_size": profile.paper_size,
+            "orientation": profile.orientation,
+            "print_area": profile.print_area,
+            "scale_percent": profile.scale_percent,
+        }
+
     (mapping_dir / "procurement.contract.v1.yaml").write_text(
         yaml.safe_dump({
             "id": contract_def.id, "format": contract_def.format, "sheet": contract_def.sheet,
             "header": contract_def.header,
+            "print": _print_section(contract_def),
             "items": {
                 "start_row": contract_def.items.start_row,
                 "end_row": contract_def.items.end_row,
@@ -221,6 +231,7 @@ def test_generate_batch_does_not_render_anything_when_mapping_is_broken(
         yaml.safe_dump({
             "id": delivery_def.id, "format": delivery_def.format, "sheet": delivery_def.sheet,
             "header": broken_header,
+            "print": _print_section(delivery_def),
             "items": {
                 "start_row": delivery_def.items.start_row,
                 "end_row": delivery_def.items.end_row,

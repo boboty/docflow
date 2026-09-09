@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -13,6 +14,8 @@ from docflow.application.generation import PASS, generate_batch
 from docflow.catalog.loader import load_catalog
 import docflow.catalog.mutation as mutation
 from docflow.catalog.mutation import CatalogMutationError, import_seal
+from docflow.domain.document import DocumentType
+from docflow.templates.registry import TemplateRegistry
 
 
 def _png(path: Path, color: tuple[int, int, int, int]) -> Path:
@@ -56,6 +59,12 @@ def _batch(path: Path, record: dict) -> Path:
     return path
 
 
+# Fields the template's own PrintProfile now authoritatively controls (see
+# docflow.renderers.xlsx._apply_print_profile) - the renderer no longer
+# preserves these from the source template verbatim.
+_PROFILE_CONTROLLED_KEYS = {"paperSize", "orientation", "scale", "fitToWidth", "fitToHeight", "fitToPage", "print_area"}
+
+
 def _print_signature(path: Path) -> dict:
     workbook = openpyxl.load_workbook(path)
     ws = workbook[workbook.sheetnames[0]]
@@ -79,6 +88,25 @@ def _print_signature(path: Path) -> dict:
         "header": ws.oddHeader.center.text,
         "footer": ws.oddFooter.right.text,
     }
+
+
+def _print_area_range(raw: str) -> str:
+    """openpyxl's print_area getter returns a fully-qualified absolute
+    reference (e.g. "'采购合同'!$A$1:$I$49"); strip the sheet-name prefix and
+    $ anchors down to the bare range a PrintProfile declares (e.g. "A1:I49").
+    """
+    match = re.search(r"\$?([A-Z]+)\$?(\d+):\$?([A-Z]+)\$?(\d+)", raw)
+    assert match, f"unrecognized print_area format: {raw!r}"
+    return f"{match.group(1)}{match.group(2)}:{match.group(3)}{match.group(4)}"
+
+
+def _preserved_print_signature(path: Path) -> dict:
+    """The subset of `_print_signature()` the renderer must still carry over
+    from the source template untouched (margins, headers/footers, breaks,
+    ...) - everything except the scale-critical fields the template's own
+    PrintProfile now authors.
+    """
+    return {key: value for key, value in _print_signature(path).items() if key not in _PROFILE_CONTROLLED_KEYS}
 
 
 def test_import_seal_managed_copy_survives_source_delete_and_workspace_move(tmp_path: Path):
@@ -151,6 +179,34 @@ def test_import_seal_commit_failure_rolls_back_binary_and_catalog(tmp_path: Path
     assert (root / "organizations.yaml").read_bytes() == catalog_before
     assert not list(managed.parent.glob(".*.tmp"))
     assert not list(managed.parent.glob(".*.bak"))
+
+
+def test_import_seal_crops_transparent_padding_and_centers_on_square_canvas(tmp_path: Path):
+    """A source PNG's incidental transparent padding must not survive into
+    the managed asset: a mapping's printed_diameter_mm describes the seal's
+    visible outer size, so any leftover padding baked into the canvas would
+    make the renderer's printed-size math shrink the visible seal below the
+    declared diameter.
+    """
+    root = _catalog(tmp_path / "workspace" / ".docflow" / "catalog", "示例卖方有限公司")
+    source = tmp_path / "padded.png"
+    canvas = PILImage.new("RGBA", (200, 200), (0, 0, 0, 0))
+    seal = PILImage.new("RGBA", (60, 40), (255, 0, 0, 255))
+    canvas.paste(seal, (70, 90), seal)
+    canvas.save(source, "PNG")
+
+    import_seal(root, "linyi_yier", source, replace=False)
+
+    managed = root.parent / "assets" / "seals" / "linyi_yier.png"
+    with PILImage.open(managed) as result:
+        result = result.convert("RGBA")
+        assert result.size == (60, 60)
+        assert result.getchannel("A").getbbox() == (0, 10, 60, 50)
+        assert result.getpixel((30, 30)) == (255, 0, 0, 255)
+        assert result.getpixel((0, 0))[3] == 0
+
+    with PILImage.open(source) as original:
+        assert original.size == (200, 200)
 
 
 def _generated(
@@ -246,13 +302,17 @@ def test_missing_or_ambiguous_participant_only_skips_that_slot(
     assert all("asset not configured" not in note for note in contract.enhancements)
 
 
-def test_multi_seal_generation_preserves_print_settings_and_expected_anchors(
+def test_multi_seal_generation_applies_print_profile_and_expected_anchors(
     tmp_path: Path, sample_batch_dict: dict, contract_template_path: Path, delivery_template_path: Path,
 ):
     summary, output = _generated(
         tmp_path, sample_batch_dict, contract_template_path, delivery_template_path,
         {"guangzhou_yier", "linyi_yier", "zhongyi"},
     )
+    profiles = {
+        "procurement.contract.v1": TemplateRegistry().get(DocumentType.PROCUREMENT_CONTRACT_V1).print_profile,
+        "delivery.note.v1": TemplateRegistry().get(DocumentType.DELIVERY_NOTE_V1).print_profile,
+    }
     expected = {
         "procurement.contract.v1": ({(0, 45), (5, 45)}, contract_template_path),
         "delivery.note.v1": ({(1, 30), (5, 30)}, delivery_template_path),
@@ -263,5 +323,30 @@ def test_multi_seal_generation_preserves_print_settings_and_expected_anchors(
         anchors = {(image.anchor._from.col, image.anchor._from.row) for image in ws._images}
         expected_anchors, template = expected[entry.document_type]
         assert anchors == expected_anchors
-        assert all((image.anchor.ext.cx, image.anchor.ext.cy) == (38 * 36_000, 38 * 36_000) for image in ws._images)
-        assert _print_signature(generated) == _print_signature(template)
+
+        # Printed seal size is fixed at 38mm on paper; since the sheet
+        # itself prints at profile.scale_percent, the workbook-embedded
+        # image must be inflated by the inverse of that factor so the
+        # PRINTED result still measures 38mm (Repair-3 fix: this used to be
+        # a bare 38mm workbook size, which shrank on paper along with the
+        # rest of the fit-to-page'd sheet).
+        profile = profiles[entry.document_type]
+        expected_emu = round(38 / (profile.scale_percent / 100.0) * 36_000)
+        assert all((image.anchor.ext.cx, image.anchor.ext.cy) == (expected_emu, expected_emu) for image in ws._images)
+
+        # Non-scale settings (margins, headers/footers, breaks, ...) still
+        # come straight from the source template, untouched.
+        assert _preserved_print_signature(generated) == _preserved_print_signature(template)
+
+        # Scale-critical settings are authored from the template's own
+        # calibrated PrintProfile, NOT preserved from the source template
+        # (whose synthetic fixture deliberately carries a stale, dynamic
+        # fit-to-page setting to prove it is overridden, not honored).
+        signature = _print_signature(generated)
+        assert signature["paperSize"] == int(ws.PAPERSIZE_A4)
+        assert signature["orientation"] == profile.orientation
+        assert signature["scale"] == profile.scale_percent
+        assert signature["fitToWidth"] is None
+        assert signature["fitToHeight"] is None
+        assert signature["fitToPage"] is False
+        assert _print_area_range(signature["print_area"]) == profile.print_area

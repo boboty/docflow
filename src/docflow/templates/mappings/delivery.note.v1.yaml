@@ -6,6 +6,15 @@ id: delivery.note.v1
 format: xlsx
 sheet: 送货单
 
+# Fixed A4 print profile - see procurement.contract.v1.yaml for the full
+# rationale. scale_percent must be re-measured against a real printout of
+# this template, independently of the contract's own scale_percent.
+print:
+  paper_size: A4
+  orientation: portrait
+  print_area: A1:H33
+  scale_percent: 70
+
 header:
   A3: "收货单位：{ship_to_company}"
   D3: "联系人：{ship_to_contact}"
@@ -19,17 +28,17 @@ header:
   A33: "送货单位：{seller}"
   E33: "收货单位：{ship_to_company}"
 
+# printed_diameter_mm is the seal's target visible diameter on the printed
+# page - see procurement.contract.v1.yaml for the full rationale.
 images:
   seller_seal:
     anchor: B31
-    width_mm: 38
-    height_mm: 38
+    printed_diameter_mm: 38
     x_offset_px: 8
     y_offset_px: 4
   ship_to_seal:
     anchor: F31
-    width_mm: 38
-    height_mm: 38
+    printed_diameter_mm: 38
     x_offset_px: 8
     y_offset_px: 4
 

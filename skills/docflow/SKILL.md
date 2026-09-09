@@ -428,9 +428,13 @@ managed import command instead of copying the PNG or editing YAML by hand:
 ```
 
 Add `--replace` only when the user explicitly asks to replace the current
-seal. The command validates PNG bytes, copies the asset into
-`.docflow/assets/seals/<organization>.png`, and stores a relative
-`seal.path`. Missing/invalid optional seal assets during generation are
+seal. The command validates PNG bytes, crops the image to its non-transparent
+(alpha-channel) bounding box and centers it on a transparent square canvas
+(so a template mapping's `printed_diameter_mm` reflects the seal's real
+visible size, not incidental padding baked into the source file), stores
+that normalized copy into `.docflow/assets/seals/<organization>.png`, and
+records a relative `seal.path`. The external source file itself is never
+modified. Missing/invalid optional seal assets during generation are
 reported independently as skipped enhancements and do not affect another
 participant's seal or document PASS/FAIL. The template mapping decides
 which participant image slots appear in each document: `buyer_seal`,
